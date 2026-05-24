@@ -147,7 +147,7 @@ Read a single note with parsed frontmatter and tags.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `path` | string | (required) | Vault-relative path to the note |
+| `path` | string | (required) | Vault-relative path to the note. Extension-agnostic — `todo` and `todo.md` both resolve to `todo.md`. A bare basename resolves Obsidian-style to a matching note anywhere in the vault. |
 
 #### `list_notes`
 

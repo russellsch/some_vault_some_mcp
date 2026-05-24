@@ -100,6 +100,39 @@ def ensure_md_extension(path: str) -> str:
     return path
 
 
+def strip_md_suffix(path: str) -> str:
+    """Remove a single trailing .md (case-insensitive). Leaves other dots alone."""
+    return path[:-3] if path.lower().endswith(".md") else path
+
+
+def resolve_note_path(target: str, all_notes: list[str]) -> str | None:
+    """Resolve a user-supplied note reference to a vault-relative .md path.
+
+    Extension-agnostic ("todo" and "todo.md" both match todo.md) and
+    Obsidian-style: a bare name resolves by basename anywhere in the vault.
+
+    Resolution order:
+      1. exact relative-path match (case-insensitive, .md optional)
+      2. basename match (case-insensitive), first by sorted vault order
+
+    all_notes must be vault-relative .md paths (e.g. from walk_vault).
+    Returns None if nothing matches.
+    """
+    target_norm = strip_md_suffix(target).replace("\\", "/").lower()
+    target_basename = target_norm.split("/")[-1]
+
+    for note in all_notes:
+        if strip_md_suffix(note).lower() == target_norm:
+            return note
+
+    for note in all_notes:
+        note_basename = strip_md_suffix(note).split("/")[-1].lower()
+        if note_basename == target_basename:
+            return note
+
+    return None
+
+
 def ensure_canvas_extension(path: str) -> str:
     """Append .canvas if the path doesn't already end with .canvas (case-insensitive)."""
     if not path.lower().endswith(".canvas"):

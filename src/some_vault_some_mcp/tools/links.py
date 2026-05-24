@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 from some_vault_some_mcp.core.frontmatter import extract_aliases
-from some_vault_some_mcp.core.paths import walk_vault
+from some_vault_some_mcp.core.paths import resolve_note_path, walk_vault
 from some_vault_some_mcp.core.wikilinks import extract_wikilinks, resolve_wikilink
 
 logger = logging.getLogger(__name__)
@@ -32,30 +32,6 @@ def _build_alias_map(all_notes: list[str], contents: dict[str, str]) -> dict[str
     return amap
 
 
-def _find_note(
-    target_path: str,
-    all_notes: list[str],
-) -> str | None:
-    """Resolve a user-supplied note path to a vault-relative path.
-
-    Tries exact match (case-insensitive), then basename match.
-    """
-    target_norm = target_path.replace(".md", "").lower()
-    target_basename = target_norm.split("/")[-1]
-
-    for note in all_notes:
-        note_norm = note[:-3].lower() if note.lower().endswith(".md") else note.lower()
-        if note_norm == target_norm:
-            return note
-
-    for note in all_notes:
-        note_basename = (note[:-3] if note.lower().endswith(".md") else note).split("/")[-1].lower()
-        if note_basename == target_basename:
-            return note
-
-    return None
-
-
 def _find_link_line(lines: list[str], link_target: str) -> tuple[int, str]:
     """Find the line number (1-indexed) and content of a wikilink."""
     target_lower = link_target.lower()
@@ -75,7 +51,7 @@ def get_backlinks(vault_path: str, path: str) -> list[dict]:
     """Return list of {source, line, context} for notes linking to path."""
     all_notes, contents = _load_vault(vault_path)
     alias_map = _build_alias_map(all_notes, contents)
-    target = _find_note(path, all_notes)
+    target = resolve_note_path(path, all_notes)
     if target is None:
         return []
 
@@ -110,7 +86,7 @@ def get_outlinks(vault_path: str, path: str) -> dict:
     all_notes, contents = _load_vault(vault_path)
     alias_map = _build_alias_map(all_notes, contents)
 
-    target = _find_note(path, all_notes)
+    target = resolve_note_path(path, all_notes)
     if target is None:
         raise FileNotFoundError(f"Note not found: {path}")
 
@@ -242,7 +218,7 @@ def get_graph_neighbors(
     all_notes, contents = _load_vault(vault_path)
     alias_map = _build_alias_map(all_notes, contents)
 
-    start = _find_note(path, all_notes)
+    start = resolve_note_path(path, all_notes)
     if start is None:
         raise FileNotFoundError(f"Note not found: {path}")
 
