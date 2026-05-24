@@ -142,6 +142,51 @@ async def test_add_node_file_validates_target(vault):
 
 
 @pytest.mark.asyncio
+async def test_add_node_file_resolves_extensionless(vault):
+    # Bare markdown name is resolved and stored with the .md extension
+    result = await add_canvas_node(vault, "test-canvas", "file", file="simple")
+    canvas = read_canvas(vault, "test-canvas")
+    node = next(n for n in canvas.nodes if n.id == result["id"])
+    assert node.file == "simple.md"
+
+
+@pytest.mark.asyncio
+async def test_add_node_file_resolves_basename(vault):
+    # A bare basename resolves to a note nested in a folder (Obsidian-style)
+    result = await add_canvas_node(vault, "test-canvas", "file", file="deep-note")
+    canvas = read_canvas(vault, "test-canvas")
+    node = next(n for n in canvas.nodes if n.id == result["id"])
+    assert node.file == "projects/alpha/deep-note.md"
+
+
+@pytest.mark.asyncio
+async def test_add_node_file_attachment_kept_literal(vault):
+    # Non-markdown attachments keep their literal path + extension
+    (Path(vault) / "diagram.png").write_bytes(b"\x89PNG\r\n")
+    result = await add_canvas_node(vault, "test-canvas", "file", file="diagram.png")
+    canvas = read_canvas(vault, "test-canvas")
+    node = next(n for n in canvas.nodes if n.id == result["id"])
+    assert node.file == "diagram.png"
+
+
+@pytest.mark.asyncio
+async def test_create_canvas_file_node_resolves_extensionless(vault):
+    nodes = [{"type": "file", "file": "simple"}]
+    await create_canvas(vault, "fnode", nodes=nodes)
+    data = json.loads((Path(vault) / "fnode.canvas").read_text())
+    assert data["nodes"][0]["file"] == "simple.md"
+
+
+@pytest.mark.asyncio
+async def test_update_node_file_resolves_extensionless(vault):
+    result = await add_canvas_node(vault, "test-canvas", "file", file="simple.md")
+    await update_canvas_node(vault, "test-canvas", result["id"], file="deep-note")
+    canvas = read_canvas(vault, "test-canvas")
+    node = next(n for n in canvas.nodes if n.id == result["id"])
+    assert node.file == "projects/alpha/deep-note.md"
+
+
+@pytest.mark.asyncio
 async def test_add_node_to_missing_canvas(vault):
     with pytest.raises(FileNotFoundError):
         await add_canvas_node(vault, "missing", "text", text="Fail")

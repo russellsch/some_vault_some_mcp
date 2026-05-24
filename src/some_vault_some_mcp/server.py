@@ -593,7 +593,11 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
         height: int = 60,
         color: str | None = None,
     ):
-        """Add a node to an existing canvas. Position auto-computed if omitted."""
+        """Add a node to an existing canvas. Position auto-computed if omitted.
+
+        For file nodes, the .md extension is optional on markdown targets (the
+        full vault path is stored); attachments need their literal extension.
+        """
         from some_vault_some_mcp.tools.canvas import add_canvas_node as _add
         try:
             result = await _add(

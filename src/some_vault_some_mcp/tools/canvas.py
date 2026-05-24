@@ -16,8 +16,10 @@ from some_vault_some_mcp.core.canvas import (
 from some_vault_some_mcp.core.paths import (
     VaultPathError,
     ensure_canvas_extension,
+    resolve_note_path,
     resolve_vault_path,
     walk_canvas,
+    walk_vault,
 )
 from some_vault_some_mcp.models import CanvasData, CanvasEdge, CanvasNode
 
@@ -71,7 +73,7 @@ async def create_canvas(
                 nd.setdefault("x", x)
                 nd.setdefault("y", y)
             if nd.get("type") == "file" and nd.get("file"):
-                _validate_file_node_target(vault_path, nd["file"])
+                nd["file"] = _resolve_file_node_target(vault_path, nd["file"])
             canvas.nodes.append(CanvasNode(**nd))
 
     if edges:
@@ -92,13 +94,25 @@ async def create_canvas(
     return resolved_path
 
 
-def _validate_file_node_target(vault_path: str, file_ref: str) -> None:
+def _resolve_file_node_target(vault_path: str, file_ref: str) -> str:
+    """Resolve a canvas file-node target to the vault-relative path to store.
+
+    Obsidian stores the full vault-relative path with extension, so the
+    literal reference is kept when it exists on disk (this covers attachments
+    like images/PDFs, which must keep their extension). An extensionless
+    markdown name is resolved Obsidian-style to its '.md' path. Raises if the
+    target can't be resolved to an existing file.
+    """
     try:
         full = resolve_vault_path(vault_path, file_ref)
     except VaultPathError as e:
         raise ValueError(f"Invalid file node target: {e}")
-    if not Path(full).exists():
+    if Path(full).exists():
+        return file_ref
+    resolved = resolve_note_path(file_ref, walk_vault(vault_path))
+    if resolved is None:
         raise FileNotFoundError(f"File node target not found: {file_ref}")
+    return resolved
 
 
 async def add_canvas_node(
@@ -122,7 +136,7 @@ async def add_canvas_node(
         raise ValueError(str(e))
 
     if node_type == "file" and file:
-        _validate_file_node_target(vault_path, file)
+        file = _resolve_file_node_target(vault_path, file)
 
     node_id = generate_canvas_id()
     result = {}
@@ -176,7 +190,7 @@ async def update_canvas_node(
         raise ValueError(str(e))
 
     if file is not None:
-        _validate_file_node_target(vault_path, file)
+        file = _resolve_file_node_target(vault_path, file)
 
     updates = {
         k: v for k, v in {
