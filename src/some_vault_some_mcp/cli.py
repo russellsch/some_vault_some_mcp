@@ -97,25 +97,25 @@ def serve(args) -> None:
 
     gate = IndexGate()
     table = _get_table(db)
-    if table is None or table.count_rows() == 0:
-        def _background_index():
-            try:
+    needs_full_index = table is None or table.count_rows() == 0
+
+    def _background_index():
+        try:
+            if needs_full_index:
                 logger.info("Background full_index started (server is accepting connections)...")
                 result = full_index(config.vault_path, config.db_path, provider)
                 logger.info(f"Full index complete: {result}")
-                start_watcher(config.vault_path, config.db_path, provider)
-                gate.set_ready()
-            except Exception as e:
-                logger.error(f"Background indexing failed: {e}")
-                gate.set_failed(str(e))
+            else:
+                logger.info("Background incremental_index started (server is accepting connections)...")
+                result = incremental_index(config.vault_path, config.db_path, provider)
+                logger.info(f"Incremental index complete: {result}")
+            start_watcher(config.vault_path, config.db_path, provider)
+            gate.set_ready()
+        except Exception as e:
+            logger.error(f"Background indexing failed: {e}")
+            gate.set_failed(str(e))
 
-        threading.Thread(target=_background_index, daemon=True, name="background-indexer").start()
-    else:
-        logger.info("Running incremental_index on startup...")
-        result = incremental_index(config.vault_path, config.db_path, provider)
-        logger.info(f"Incremental index complete: {result}")
-        start_watcher(config.vault_path, config.db_path, provider)
-        gate.set_ready()
+    threading.Thread(target=_background_index, daemon=True, name="background-indexer").start()
 
     # Step 5: build and run server
     mcp = build_server(config, provider, gate)
