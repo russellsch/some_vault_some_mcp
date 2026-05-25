@@ -150,7 +150,11 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
 
     # ── read ─────────────────────────────────────────────────────────────
     def get_note(path: str):
-        """Read the full content of a note by vault-relative path."""
+        """Read the full content of a note by vault-relative path.
+
+        The .md extension is optional ("todo" and "todo.md" both work), and a
+        bare note name resolves to a matching note anywhere in the vault.
+        """
         from some_vault_some_mcp.tools.read import get_note as _get_note
         note = _get_note(vault_path, path)
         if note is None:
@@ -167,7 +171,7 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
             header.append("")
         return "\n".join(header) + note.content
 
-    _reg("get_note", "Read a single note with parsed frontmatter and tags.", get_note)
+    _reg("get_note", "Read a single note with parsed frontmatter and tags. Path extension is optional.", get_note)
 
     def list_notes(
         folder: str | None = None,
@@ -589,7 +593,11 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
         height: int = 60,
         color: str | None = None,
     ):
-        """Add a node to an existing canvas. Position auto-computed if omitted."""
+        """Add a node to an existing canvas. Position auto-computed if omitted.
+
+        For file nodes, the .md extension is optional on markdown targets (the
+        full vault path is stored); attachments need their literal extension.
+        """
         from some_vault_some_mcp.tools.canvas import add_canvas_node as _add
         try:
             result = await _add(

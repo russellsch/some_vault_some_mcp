@@ -147,7 +147,7 @@ Read a single note with parsed frontmatter and tags.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
-| `path` | string | (required) | Vault-relative path to the note |
+| `path` | string | (required) | Vault-relative path to the note. Extension-agnostic — `todo` and `todo.md` both resolve to `todo.md`. A bare basename resolves Obsidian-style to a matching note anywhere in the vault. |
 
 #### `list_notes`
 
@@ -336,7 +336,7 @@ Add a node (text/file/link/group) to a canvas. Position auto-computed via grid l
 | `canvas_path` | string | (required) | Path to the canvas |
 | `node_type` | string | (required) | `text`, `file`, `link`, or `group` |
 | `text` | string | `null` | Text content (for text nodes) |
-| `file` | string | `null` | Vault-relative file path (for file nodes) |
+| `file` | string | `null` | Vault-relative file path (for file nodes). For markdown notes the `.md` extension is optional and a bare name resolves Obsidian-style; the full path is stored. Attachments (images/PDFs) must be given with their extension. |
 | `url` | string | `null` | URL (for link nodes) |
 | `label` | string | `null` | Display label |
 | `x` | int | `null` | X position. Auto-placed if omitted |

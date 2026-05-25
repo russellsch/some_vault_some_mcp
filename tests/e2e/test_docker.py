@@ -6,6 +6,7 @@ and mount "rw".  EMBEDDING_PROVIDER=mock so no Ollama needed.
 """
 
 import json
+import os
 import shutil
 import time
 import urllib.request
@@ -69,11 +70,27 @@ def mcp_url(docker_image):
         yield url
 
 
+def _make_world_writable(root: Path) -> None:
+    """Grant write access to every user in the tree.
+
+    The container runs as the image's "vault" user (uid 1000), which differs
+    from the CI runner uid that owns this copy. Without this, the bind-mounted
+    vault is read-only to the container and write tools fail with EACCES.
+    """
+    os.chmod(root, 0o777)
+    for dirpath, dirnames, filenames in os.walk(root):
+        for name in dirnames:
+            os.chmod(Path(dirpath) / name, 0o777)
+        for name in filenames:
+            os.chmod(Path(dirpath) / name, 0o666)
+
+
 @pytest.fixture(scope="module")
 def mcp_rw_url(docker_image, tmp_path_factory):
     """Container with a writable copy of the test vault."""
     vault_copy = tmp_path_factory.mktemp("vault_rw")
     shutil.copytree(TEST_VAULT, vault_copy, dirs_exist_ok=True)
+    _make_world_writable(vault_copy)
     container = _start_container(docker_image, str(vault_copy.resolve()), "rw")
     with container:
         host = container.get_container_host_ip()

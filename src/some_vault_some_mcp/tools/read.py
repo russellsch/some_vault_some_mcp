@@ -5,16 +5,44 @@ from pathlib import Path
 
 from some_vault_some_mcp.core.filters import escape_filter_value
 from some_vault_some_mcp.core.frontmatter import parse_frontmatter, extract_all_tags
-from some_vault_some_mcp.core.paths import walk_vault, resolve_vault_path, VaultPathError
+from some_vault_some_mcp.core.paths import (
+    VaultPathError,
+    ensure_md_extension,
+    resolve_note_path,
+    resolve_vault_path,
+    walk_vault,
+)
 from some_vault_some_mcp.models import NoteContent, NoteMetadata
 
 logger = logging.getLogger(__name__)
 
 
-def get_note(vault_path: str, path: str) -> NoteContent | None:
-    """Read a single note by vault-relative path."""
+def _resolve_note_relpath(vault_path: str, path: str) -> str | None:
+    """Map a user-supplied note reference to a vault-relative .md path.
+
+    Fast path: the literal path (with .md ensured) when it exists on disk.
+    Fallback: Obsidian-style resolution (exact relative path or basename)
+    against every note in the vault.
+    """
+    candidate = ensure_md_extension(path)
     try:
-        full_path = resolve_vault_path(vault_path, path)
+        full_path = resolve_vault_path(vault_path, candidate)
+    except VaultPathError:
+        return None
+    if Path(full_path).exists():
+        return candidate
+    return resolve_note_path(candidate, walk_vault(vault_path))
+
+
+def get_note(vault_path: str, path: str) -> NoteContent | None:
+    """Read a single note. Path is extension-agnostic and resolves
+    Obsidian-style ("todo", "todo.md", and a bare basename all work)."""
+    rel_path = _resolve_note_relpath(vault_path, path)
+    if rel_path is None:
+        return None
+
+    try:
+        full_path = resolve_vault_path(vault_path, rel_path)
     except VaultPathError:
         return None
 
@@ -28,7 +56,7 @@ def get_note(vault_path: str, path: str) -> NoteContent | None:
     title = fm.get("title") or p.stem
 
     return NoteContent(
-        file_path=path,
+        file_path=rel_path,
         title=str(title),
         content=body,
         frontmatter=fm,

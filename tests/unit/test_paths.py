@@ -9,7 +9,9 @@ import pytest
 from some_vault_some_mcp.core.paths import (
     VaultPathError,
     ensure_md_extension,
+    resolve_note_path,
     resolve_vault_path,
+    strip_md_suffix,
     walk_vault,
 )
 
@@ -86,6 +88,50 @@ def test_ensure_md_extension():
     assert ensure_md_extension("note.md") == "note.md"
     assert ensure_md_extension("note.MD") == "note.MD"
     assert ensure_md_extension("folder/note") == "folder/note.md"
+
+
+def test_strip_md_suffix():
+    assert strip_md_suffix("note.md") == "note"
+    assert strip_md_suffix("note.MD") == "note"
+    assert strip_md_suffix("note") == "note"
+    # Only a trailing .md is stripped, not .md elsewhere in the name
+    assert strip_md_suffix("a.md.notes") == "a.md.notes"
+    assert strip_md_suffix("my.mdata/x") == "my.mdata/x"
+
+
+def test_resolve_note_path_extension_agnostic():
+    notes = ["todo.md", "projects/alpha/deep-note.md"]
+    assert resolve_note_path("todo", notes) == "todo.md"
+    assert resolve_note_path("todo.md", notes) == "todo.md"
+
+
+def test_resolve_note_path_case_insensitive():
+    notes = ["todo.md"]
+    assert resolve_note_path("ToDo", notes) == "todo.md"
+    assert resolve_note_path("TODO.MD", notes) == "todo.md"
+
+
+def test_resolve_note_path_basename_across_folders():
+    notes = ["projects/alpha/deep-note.md", "other.md"]
+    # A bare basename resolves to a note nested in a folder (Obsidian-style)
+    assert resolve_note_path("deep-note", notes) == "projects/alpha/deep-note.md"
+
+
+def test_resolve_note_path_exact_relative_match_preferred():
+    notes = ["todo.md", "archive/todo.md"]
+    # Exact relative path wins over basename
+    assert resolve_note_path("archive/todo", notes) == "archive/todo.md"
+
+
+def test_resolve_note_path_no_match():
+    assert resolve_note_path("phantom", ["todo.md"]) is None
+
+
+def test_resolve_note_path_suffix_bug_regression():
+    # A note whose name contains ".md" mid-string must not be mangled.
+    notes = ["a.md.notes.md"]
+    assert resolve_note_path("a.md.notes", notes) == "a.md.notes.md"
+    assert resolve_note_path("a.md.notes.md", notes) == "a.md.notes.md"
 
 
 def test_symlink_escape_rejected():
