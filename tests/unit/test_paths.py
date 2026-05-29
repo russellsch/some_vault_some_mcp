@@ -8,6 +8,7 @@ import pytest
 
 from some_vault_some_mcp.core.paths import (
     VaultPathError,
+    check_blocked_suffixes,
     ensure_md_extension,
     resolve_note_path,
     resolve_vault_path,
@@ -146,6 +147,60 @@ def test_symlink_escape_rejected():
 
             with pytest.raises(VaultPathError, match="traversal"):
                 resolve_vault_path(vault, "escape.md")
+
+
+def test_check_blocked_suffixes_blocks_matching():
+    with pytest.raises(ValueError):
+        check_blocked_suffixes("note.md.old", [".old"])
+
+
+def test_check_blocked_suffixes_blocks_bkp():
+    with pytest.raises(ValueError):
+        check_blocked_suffixes("archive/note.bkp", [".old", ".bkp"])
+
+
+def test_check_blocked_suffixes_case_insensitive():
+    with pytest.raises(ValueError):
+        check_blocked_suffixes("note.md.OLD", [".old"])
+
+
+def test_check_blocked_suffixes_passes_clean_path():
+    check_blocked_suffixes("note.md", [".old", ".bkp"])
+    check_blocked_suffixes("folder/note", [".old"])
+
+
+def test_check_blocked_suffixes_real_daily_note_pattern():
+    # The actual pattern seen in the wild: agent passes "2026-05-22.md.old"
+    # which ensure_md_extension would turn into "2026-05-22.md.old.md"
+    with pytest.raises(ValueError):
+        check_blocked_suffixes("2026-05-22.md.old", [".old"])
+
+
+def test_check_blocked_suffixes_real_project_note_pattern():
+    with pytest.raises(ValueError):
+        check_blocked_suffixes("300 Projects.md.old", [".old", ".bkp"])
+
+
+def test_check_blocked_suffixes_real_nested_path():
+    with pytest.raises(ValueError):
+        check_blocked_suffixes(
+            "500 Research/Ontology-Grounded Validation Pipeline Design.md.old",
+            [".old"],
+        )
+
+
+def test_check_blocked_suffixes_empty_list_always_passes():
+    check_blocked_suffixes("note.md.old", [])
+
+
+def test_check_blocked_suffixes_custom_message():
+    with pytest.raises(ValueError, match="custom msg"):
+        check_blocked_suffixes("note.old", [".old"], "custom msg")
+
+
+def test_check_blocked_suffixes_default_message_includes_path():
+    with pytest.raises(ValueError, match="note.md.old"):
+        check_blocked_suffixes("note.md.old", [".old"])
 
 
 def test_error_message_no_absolute_path_leak():

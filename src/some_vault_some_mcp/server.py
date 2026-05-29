@@ -214,6 +214,12 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
         frontmatter: JSON string of frontmatter fields, e.g. '{"title":"My Note","tags":["idea"]}'.
         """
         from some_vault_some_mcp.tools.write import create_note as _create_note
+        from some_vault_some_mcp.core.paths import check_blocked_suffixes
+        if config.blocked_path_suffixes:
+            try:
+                check_blocked_suffixes(path, config.blocked_path_suffixes, config.blocked_suffix_message)
+            except ValueError as e:
+                return f"Error: {e}"
         fm = None
         if frontmatter:
             try:
@@ -279,6 +285,12 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
     async def move_note(old_path: str, new_path: str, update_links: bool = True):
         """Move or rename a note, optionally rewriting wikilinks."""
         from some_vault_some_mcp.tools.write import move_note as _move
+        from some_vault_some_mcp.core.paths import check_blocked_suffixes
+        if config.blocked_path_suffixes:
+            try:
+                check_blocked_suffixes(new_path, config.blocked_path_suffixes, config.blocked_suffix_message)
+            except ValueError as e:
+                return f"Error: {e}"
         try:
             result = await _move(vault_path, old_path, new_path, update_links)
             lines = [f"Moved '{old_path}' to '{new_path}'."]

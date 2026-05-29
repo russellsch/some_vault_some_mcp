@@ -40,28 +40,37 @@ class VaultMcpConfig:
     soft_delete_is_permanent: bool = False
     tool_overrides: dict[str, ToolOverride] = field(default_factory=dict)
     disabled_tools: set[str] = field(default_factory=set)
+    blocked_path_suffixes: list[str] = field(default_factory=list)
+    blocked_suffix_message: str = ""
 
 
-def load_overrides(override_path: str | None = None) -> tuple[dict[str, ToolOverride], set[str]]:
+def load_overrides(
+    override_path: str | None = None,
+) -> tuple[dict[str, ToolOverride], set[str], dict]:
     """Load tool overrides from YAML file.
 
-    Returns (overrides_dict, disabled_set). Both empty on missing/empty file.
+    Returns (overrides_dict, disabled_set, path_validation_dict).
+    All empty on missing/empty file.
+
+    path_validation_dict keys:
+      blocked_suffixes: list[str]
+      message: str
     """
     path = override_path or os.getenv("some_vault_some_mcp_OVERRIDES", "")
     if not path:
-        return {}, set()
+        return {}, set(), {}
 
     p = Path(path)
     if not p.exists():
         logger.info(f"Override file not found at {path} — using defaults")
-        return {}, set()
+        return {}, set(), {}
 
     try:
         raw = p.read_text(encoding="utf-8")
         data = yaml.safe_load(raw) or {}
     except Exception as e:
         logger.warning(f"Failed to parse override file {path}: {e} — using defaults")
-        return {}, set()
+        return {}, set(), {}
 
     overrides: dict[str, ToolOverride] = {}
     tools_data = data.get("tools") or {}
@@ -76,13 +85,30 @@ def load_overrides(override_path: str | None = None) -> tuple[dict[str, ToolOver
     disabled_raw = data.get("disabled") or []
     disabled = {str(t) for t in disabled_raw if t}
 
-    return overrides, disabled
+    pv = data.get("path_validation") or {}
+    path_validation = {
+        "blocked_suffixes": [str(s) for s in (pv.get("blocked_suffixes") or []) if s],
+        "message": str(pv.get("message") or ""),
+    }
+
+    return overrides, disabled, path_validation
 
 
 def load_config() -> VaultMcpConfig:
     """Build VaultMcpConfig from environment variables."""
-    overrides, disabled = load_overrides()
+    overrides, disabled, path_validation = load_overrides()
     raw = os.getenv("VAULT_SOFT_DELETE_IS_PERMANENT", "").strip().lower()
+
+    # YAML path_validation takes precedence; env vars are the fallback.
+    blocked = path_validation.get("blocked_suffixes") or [
+        s.strip()
+        for s in os.getenv("VAULT_BLOCKED_PATH_SUFFIXES", "").split(",")
+        if s.strip()
+    ]
+    blocked_message = path_validation.get("message") or os.getenv(
+        "VAULT_BLOCKED_SUFFIX_MESSAGE", ""
+    )
+
     return VaultMcpConfig(
         vault_path=os.getenv("VAULT_PATH", ""),
         db_path=os.getenv("LANCE_DB_PATH", "./data/vault.lance"),
@@ -93,6 +119,8 @@ def load_config() -> VaultMcpConfig:
         soft_delete_is_permanent=raw in ("1", "true", "yes"),
         tool_overrides=overrides,
         disabled_tools=disabled,
+        blocked_path_suffixes=blocked,
+        blocked_suffix_message=blocked_message,
     )
 
 

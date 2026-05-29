@@ -93,6 +93,20 @@ def walk_vault(vault_path: str) -> list[str]:
     return sorted(results)
 
 
+def check_blocked_suffixes(path: str, blocked: list[str], message: str = "") -> None:
+    """Raise ValueError if path ends with any blocked suffix (case-insensitive).
+
+    Checked against the raw user-supplied path before ensure_md_extension runs,
+    so "note.md.old" is caught by suffix ".old" before it becomes "note.md.old.md".
+    """
+    lower = path.lower()
+    for suffix in blocked:
+        if lower.endswith(suffix.lower()):
+            raise ValueError(
+                message or f"Path '{path}' uses blocked suffix '{suffix}'."
+            )
+
+
 def ensure_md_extension(path: str) -> str:
     """Append .md if the path doesn't already end with .md (case-insensitive)."""
     if not path.lower().endswith(".md"):

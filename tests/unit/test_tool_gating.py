@@ -80,7 +80,7 @@ class TestCheckIndexGate:
 
 
 def _make_config(tmp_path):
-    overrides, disabled = load_overrides(None)
+    overrides, disabled, _ = load_overrides(None)
     return VaultMcpConfig(
         vault_path=str(tmp_path / "vault"),
         db_path=str(tmp_path / "db.lance"),
