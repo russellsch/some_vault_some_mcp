@@ -234,7 +234,7 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
         except Exception as e:
             return f"Error creating note: {e}"
 
-    _reg("create_note", "Create a new note. Fails if it already exists.", create_note)
+    _reg("create_note", "Create a new note. Fails if it already exists. The .md extension is added automatically — do not add .md or other extensions to the path. Never create redirect stubs, backups, or temporary files.", create_note)
 
     async def append_to_note(path: str, content: str):
         """Append text to end of an existing note."""
@@ -247,7 +247,7 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
         except Exception as e:
             return f"Error appending: {e}"
 
-    _reg("append_to_note", "Append text to the end of an existing note.", append_to_note)
+    _reg("append_to_note", "Append text to the end of an existing note. The .md extension is added automatically.", append_to_note)
 
     async def prepend_to_note(path: str, content: str):
         """Insert content after frontmatter, before body."""
@@ -260,7 +260,7 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
         except Exception as e:
             return f"Error prepending: {e}"
 
-    _reg("prepend_to_note", "Insert text after frontmatter, before the note body.", prepend_to_note)
+    _reg("prepend_to_note", "Insert text after frontmatter, before the note body. The .md extension is added automatically.", prepend_to_note)
 
     async def update_frontmatter(path: str, properties: str):
         """Merge key-value pairs into YAML frontmatter.
@@ -280,7 +280,7 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
         except Exception as e:
             return f"Error updating frontmatter: {e}"
 
-    _reg("update_frontmatter", "Merge key-value pairs into YAML frontmatter. Unlisted keys preserved.", update_frontmatter)
+    _reg("update_frontmatter", "Merge key-value pairs into YAML frontmatter. Unlisted keys preserved. The .md extension is added automatically.", update_frontmatter)
 
     async def move_note(old_path: str, new_path: str, update_links: bool = True):
         """Move or rename a note, optionally rewriting wikilinks."""
@@ -306,7 +306,7 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
         except Exception as e:
             return f"Error moving note: {e}"
 
-    _reg("move_note", "Move or rename a note. Rewrites wikilinks vault-wide by default.", move_note)
+    _reg("move_note", "Move or rename a note. ALL wikilinks across the vault are updated automatically — do not create redirect stubs at the old path. The .md extension is added automatically. Do not use this to create backups; use delete_note instead (it moves to .trash).", move_note)
 
     async def delete_note(path: str, permanent: bool = False):
         """Delete a note. Default: move to .trash. permanent=True: hard delete."""
