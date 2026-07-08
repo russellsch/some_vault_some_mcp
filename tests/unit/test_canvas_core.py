@@ -230,3 +230,27 @@ def test_walk_canvas(tmp_path):
 
 def test_walk_canvas_empty(tmp_path):
     assert walk_canvas(str(tmp_path)) == []
+
+
+def test_roundtrip_preserves_unknown_node_and_edge_fields():
+    """Unknown/future JSON-Canvas fields must survive parse -> serialize
+    (plan fable-fixes, Phase 0.2 / O1). Regression: they were silently dropped."""
+    raw = json.dumps({
+        "nodes": [
+            {"id": "g1", "type": "group", "x": 0, "y": 0, "width": 400, "height": 400,
+             "label": "Grp", "background": "bg.png", "backgroundStyle": "cover"},
+            {"id": "f1", "type": "file", "x": 0, "y": 0, "width": 200, "height": 100,
+             "file": "note.md", "subpath": "#Heading"},
+        ],
+        "edges": [
+            {"id": "e1", "fromNode": "g1", "toNode": "f1", "someFutureKey": "keepme"},
+        ],
+    })
+    out = json.loads(serialize_canvas(parse_canvas(raw)))
+    g1 = next(n for n in out["nodes"] if n["id"] == "g1")
+    f1 = next(n for n in out["nodes"] if n["id"] == "f1")
+    e1 = out["edges"][0]
+    assert g1["background"] == "bg.png"
+    assert g1["backgroundStyle"] == "cover"
+    assert f1["subpath"] == "#Heading"
+    assert e1["someFutureKey"] == "keepme"

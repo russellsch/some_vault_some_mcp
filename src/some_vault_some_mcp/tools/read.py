@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-from some_vault_some_mcp.core.filters import escape_filter_value
+from some_vault_some_mcp.core.filters import escape_string, escape_like
 from some_vault_some_mcp.core.frontmatter import parse_frontmatter, extract_all_tags
 from some_vault_some_mcp.core.paths import (
     VaultPathError,
@@ -141,15 +141,15 @@ def _list_from_index(
 
         conditions = []
         if tags:
-            tag_conditions = [f'tags LIKE "%{escape_filter_value(t)}%"' for t in tags]
+            tag_conditions = [f'tags LIKE "%{escape_like(t)}%"' for t in tags]
             conditions.append(f"({' OR '.join(tag_conditions)})")
         if projects:
-            proj_conditions = [f'projects LIKE "%{escape_filter_value(p)}%"' for p in projects]
+            proj_conditions = [f'projects LIKE "%{escape_like(p)}%"' for p in projects]
             conditions.append(f"({' OR '.join(proj_conditions)})")
         if status:
-            conditions.append(f'status = "{escape_filter_value(status)}"')
+            conditions.append(f'status = "{escape_string(status)}"')
         if area:
-            conditions.append(f'area LIKE "%{escape_filter_value(area)}%"')
+            conditions.append(f'area LIKE "%{escape_like(area)}%"')
 
         where = " AND ".join(conditions)
         df = table.search().where(where).select(["file_path"]).to_pandas()

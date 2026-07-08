@@ -16,7 +16,7 @@ from some_vault_some_mcp.core.embeddings import MockProvider
 
 
 def _make_config(override_path=None, **kwargs):
-    overrides, disabled = load_overrides(override_path)
+    overrides, disabled, _ = load_overrides(override_path)
     cfg = VaultMcpConfig(
         vault_path=kwargs.get("vault_path", "/tmp"),
         db_path=kwargs.get("db_path", "/tmp/vault.lance"),

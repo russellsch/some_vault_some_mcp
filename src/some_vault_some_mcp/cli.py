@@ -11,6 +11,7 @@ Boot sequence (§6.4):
 """
 
 import argparse
+import hmac
 import logging
 import os
 import sys
@@ -123,74 +124,89 @@ def serve(args) -> None:
     if config.transport == "stdio":
         mcp.run(transport="stdio")
     else:
-        # SSE with optional API key auth
+        import uvicorn
+
+        loopback = config.host in ("127.0.0.1", "::1", "localhost")
+        if not config.api_key and not loopback:
+            logger.warning(
+                f"Binding {config.host}:{config.port} with NO VAULT_API_KEY set — "
+                "the vault is exposed to the network without authentication. Set "
+                "VAULT_API_KEY, or bind 127.0.0.1."
+            )
+
+        sse_app = mcp.http_app(transport="sse")
         if config.api_key:
-            import uvicorn
-
-            class APIKeyMiddleware:
-                def __init__(self, app):
-                    self.app = app
-
-                async def __call__(self, scope, receive, send):
-                    if scope["type"] not in ("http", "websocket"):
-                        return await self.app(scope, receive, send)
-                    path = scope.get("path", "")
-                    if scope["type"] == "http" and path == "/":
-                        await send({
-                            "type": "http.response.start",
-                            "status": 200,
-                            "headers": [(b"content-type", b"application/json")],
-                        })
-                        await send({
-                            "type": "http.response.body",
-                            "body": b'{"status":"ok","service":"some-vault-some-mcp"}',
-                        })
-                        return
-                    if path in ("/sse", "/sse/"):
-                        return await self.app(scope, receive, send)
-                    headers = dict(scope.get("headers", []))
-                    auth = headers.get(b"authorization", b"").decode()
-                    if auth == f"Bearer {config.api_key}":
-                        return await self.app(scope, receive, send)
-                    await send({
-                        "type": "http.response.start",
-                        "status": 401,
-                        "headers": [(b"content-type", b"application/json")],
-                    })
-                    await send({
-                        "type": "http.response.body",
-                        "body": b'{"error":"unauthorized"}',
-                    })
-
-            sse_app = mcp.http_app(transport="sse")
-            app = APIKeyMiddleware(sse_app)
+            app = _APIKeyMiddleware(sse_app, config.api_key, config.allow_unauth_sse)
             logger.info(f"Starting SSE with API key auth on {config.host}:{config.port}")
-            uvicorn.run(app, host=config.host, port=config.port)
         else:
-            import uvicorn
-
-            class HealthMiddleware:
-                def __init__(self, app):
-                    self.app = app
-
-                async def __call__(self, scope, receive, send):
-                    if scope["type"] == "http" and scope.get("path", "") == "/":
-                        await send({
-                            "type": "http.response.start",
-                            "status": 200,
-                            "headers": [(b"content-type", b"application/json")],
-                        })
-                        await send({
-                            "type": "http.response.body",
-                            "body": b'{"status":"ok","service":"some-vault-some-mcp"}',
-                        })
-                        return
-                    return await self.app(scope, receive, send)
-
-            sse_app = mcp.http_app(transport="sse")
-            app = HealthMiddleware(sse_app)
+            app = _HealthMiddleware(sse_app)
             logger.info(f"Starting SSE on {config.host}:{config.port}")
-            uvicorn.run(app, host=config.host, port=config.port)
+        uvicorn.run(app, host=config.host, port=config.port)
+
+
+def _health_response():
+    return (
+        {"type": "http.response.start", "status": 200,
+         "headers": [(b"content-type", b"application/json")]},
+        {"type": "http.response.body",
+         "body": b'{"status":"ok","service":"some-vault-some-mcp"}'},
+    )
+
+
+class _HealthMiddleware:
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope.get("path", "") == "/":
+            start, body = _health_response()
+            await send(start)
+            await send(body)
+            return
+        return await self.app(scope, receive, send)
+
+
+class _APIKeyMiddleware:
+    def __init__(self, app, api_key, allow_unauth_sse=False):
+        self.app = app
+        self._expected = f"Bearer {api_key}"
+        self.allow_unauth_sse = allow_unauth_sse
+
+    def _authorized(self, scope) -> bool:
+        headers = dict(scope.get("headers", []))
+        auth = headers.get(b"authorization", b"").decode()
+        return hmac.compare_digest(auth, self._expected)
+
+    async def __call__(self, scope, receive, send):
+        stype = scope.get("type")
+        if stype not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+        # Never speak HTTP to a websocket — reject cleanly at the WS layer.
+        if stype == "websocket":
+            if self._authorized(scope):
+                return await self.app(scope, receive, send)
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        path = scope.get("path", "")
+        if path == "/":
+            start, body = _health_response()
+            await send(start)
+            await send(body)
+            return
+        # Opt-in escape hatch for clients that cannot send a header on the SSE GET.
+        if self.allow_unauth_sse and path in ("/sse", "/sse/"):
+            return await self.app(scope, receive, send)
+        if self._authorized(scope):
+            return await self.app(scope, receive, send)
+        await send({
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [(b"content-type", b"application/json")],
+        })
+        await send({
+            "type": "http.response.body",
+            "body": b'{"error":"unauthorized"}',
+        })
 
 
 def main():

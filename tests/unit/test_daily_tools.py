@@ -124,3 +124,17 @@ async def test_create_daily_note_no_date_uses_today(minimal_vault):
     today = datetime.now().strftime("%Y-%m-%d")
     path = await create_daily_note(minimal_vault, content="today entry")
     assert today in path
+
+
+@pytest.mark.asyncio
+async def test_create_daily_note_template_traversal_blocked(vault, tmp_path):
+    """template_path must not escape the vault boundary (plan Phase 0.3 / F4)."""
+    secret = Path(tmp_path) / "secret.md"
+    secret.write_text("TOP SECRET OUTSIDE VAULT", encoding="utf-8")
+    # vault is tmp_path/vault, so ../secret escapes to tmp_path/secret
+    with pytest.raises(ValueError) as exc:
+        await create_daily_note(vault, date="2025-01-02", template_path="../secret")
+    assert "template" in str(exc.value).lower()
+    # And the outside content must not have leaked into a created note.
+    for p in Path(vault).rglob("*.md"):
+        assert "TOP SECRET" not in p.read_text(encoding="utf-8")

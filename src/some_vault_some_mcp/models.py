@@ -1,6 +1,6 @@
 """Domain Pydantic models per §6.2.1."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class NoteContent(BaseModel):
@@ -91,6 +91,10 @@ class ReindexResult(BaseModel):
 # ── Canvas models ────────────────────────────────────────────────────────
 
 class CanvasNode(BaseModel):
+    # Preserve unknown/future JSON-Canvas fields (background, backgroundStyle,
+    # subpath, …) so round-tripping a node never drops data the user didn't touch.
+    model_config = ConfigDict(extra="allow")
+
     id: str
     type: str  # text, file, link, group
     x: int
@@ -105,6 +109,8 @@ class CanvasNode(BaseModel):
 
 
 class CanvasEdge(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     id: str
     fromNode: str
     toNode: str

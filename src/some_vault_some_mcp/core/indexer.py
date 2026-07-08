@@ -248,8 +248,8 @@ def incremental_index(
         # Remove old chunks for reindexed/deleted files
         paths_to_remove = {p for p, _ in to_reindex} | deleted
         if paths_to_remove:
-            from some_vault_some_mcp.core.filters import escape_filter_value
-            filter_expr = " OR ".join(f'file_path = "{escape_filter_value(p)}"' for p in paths_to_remove)
+            from some_vault_some_mcp.core.filters import escape_string
+            filter_expr = " OR ".join(f'file_path = "{escape_string(p)}"' for p in paths_to_remove)
             table.delete(filter_expr)
 
         vault = Path(vault_path)

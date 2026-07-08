@@ -34,9 +34,10 @@ class VaultMcpConfig:
     vault_path: str = ""
     db_path: str = ""
     transport: str = "sse"
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = 3789
     api_key: str = ""
+    allow_unauth_sse: bool = False
     soft_delete_is_permanent: bool = False
     tool_overrides: dict[str, ToolOverride] = field(default_factory=dict)
     disabled_tools: set[str] = field(default_factory=set)
@@ -113,9 +114,11 @@ def load_config() -> VaultMcpConfig:
         vault_path=os.getenv("VAULT_PATH", ""),
         db_path=os.getenv("LANCE_DB_PATH", "./data/vault.lance"),
         transport=os.getenv("MCP_TRANSPORT", "sse"),
-        host=os.getenv("MCP_HOST", "0.0.0.0"),
+        host=os.getenv("MCP_HOST", "127.0.0.1"),
         port=int(os.getenv("MCP_PORT", "3789")),
         api_key=os.getenv("VAULT_API_KEY", ""),
+        allow_unauth_sse=os.getenv("VAULT_ALLOW_UNAUTH_SSE", "").strip().lower()
+        in ("1", "true", "yes"),
         soft_delete_is_permanent=raw in ("1", "true", "yes"),
         tool_overrides=overrides,
         disabled_tools=disabled,

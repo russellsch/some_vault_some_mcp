@@ -7,7 +7,7 @@ from pathlib import Path
 
 from some_vault_some_mcp.core.dates import format_moment_date, parse_date_str
 from some_vault_some_mcp.core.frontmatter import parse_frontmatter
-from some_vault_some_mcp.core.paths import resolve_internal, VaultPathError, ensure_md_extension
+from some_vault_some_mcp.core.paths import resolve_internal, resolve_vault_path, VaultPathError, ensure_md_extension
 from some_vault_some_mcp.tools.write import create_note
 
 logger = logging.getLogger(__name__)
@@ -88,8 +88,14 @@ async def create_daily_note(
     final_content = content or ""
     if template_path:
         tmpl_path = ensure_md_extension(template_path)
+        # Route through the vault boundary — templates live in-vault, and this is
+        # the one filesystem read that previously skipped resolve_vault_path
+        # (allowed `../secret` to escape). Obsidian templates are in-vault anyway.
         try:
-            full_tmpl = Path(vault_path) / tmpl_path
+            full_tmpl = Path(resolve_vault_path(vault_path, tmpl_path))
+        except VaultPathError as e:
+            raise ValueError(f"Invalid template path: {e}")
+        try:
             template_content = full_tmpl.read_text(encoding="utf-8", errors="replace")
             final_content = template_content.replace("{{date}}", formatted)
         except Exception as e:

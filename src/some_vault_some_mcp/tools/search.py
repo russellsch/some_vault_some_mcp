@@ -4,7 +4,7 @@ import logging
 import os
 from pathlib import Path
 
-from some_vault_some_mcp.core.filters import escape_filter_value
+from some_vault_some_mcp.core.filters import escape_like
 from some_vault_some_mcp.models import SearchResult, TextSearchMatch, TextSearchResult
 
 logger = logging.getLogger(__name__)
@@ -43,10 +43,10 @@ def semantic_search(
     if tags:
         tag_conditions = []
         for t in tags:
-            tag_conditions.append(f'tags LIKE "%{escape_filter_value(t)}%"')
+            tag_conditions.append(f'tags LIKE "%{escape_like(t)}%"')
         conditions.append(f"({' OR '.join(tag_conditions)})")
     if folder:
-        conditions.append(f'file_path LIKE "{escape_filter_value(folder)}%"')
+        conditions.append(f'file_path LIKE "{escape_like(folder)}%"')
 
     search_q = table.search(query_vector).limit(top_k)
     if conditions:
@@ -89,10 +89,10 @@ def hybrid_search(
     # Build where clause for pre-filter
     conditions = []
     if tags:
-        tag_conditions = [f'tags LIKE "%{escape_filter_value(t)}%"' for t in tags]
+        tag_conditions = [f'tags LIKE "%{escape_like(t)}%"' for t in tags]
         conditions.append(f"({' OR '.join(tag_conditions)})")
     if folder:
-        conditions.append(f'file_path LIKE "{escape_filter_value(folder)}%"')
+        conditions.append(f'file_path LIKE "{escape_like(folder)}%"')
     where_clause = " AND ".join(conditions) if conditions else None
 
     # Semantic pass

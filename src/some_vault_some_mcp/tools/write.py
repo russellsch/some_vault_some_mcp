@@ -3,6 +3,7 @@
 import logging
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 
 from some_vault_some_mcp.core.atomic_write import atomic_write, with_file_lock
@@ -120,6 +121,13 @@ async def delete_note(vault_path: str, path: str, permanent: bool = False) -> No
             trash_dir = Path(vault_path) / ".trash"
             trash_target = trash_dir / resolved_path
             trash_target.parent.mkdir(parents=True, exist_ok=True)
+            # os.rename overwrites — disambiguate on collision so a repeat delete
+            # of the same name doesn't destroy the previously trashed copy.
+            if trash_target.exists():
+                stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+                trash_target = trash_target.with_name(
+                    f"{trash_target.stem}.{stamp}{trash_target.suffix}"
+                )
             os.rename(full_path, str(trash_target))
 
     await with_file_lock(full_path, _delete)

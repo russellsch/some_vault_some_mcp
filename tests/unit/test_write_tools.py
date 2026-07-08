@@ -235,3 +235,18 @@ async def test_move_note_existing_dest_fails(vault):
     await create_note(vault, "dst.md", "existing dest")
     with pytest.raises(FileExistsError):
         await move_note(vault, "src.md", "dst.md", update_links=False)
+
+
+@pytest.mark.asyncio
+async def test_delete_note_soft_collision_keeps_both(vault):
+    """A repeat soft-delete of the same name must not clobber the prior trash copy
+    (plan Phase 0.5 / O7/F7)."""
+    from some_vault_some_mcp.tools.write import create_note
+    await create_note(vault, "dup.md", "FIRST")
+    await delete_note(vault, "dup.md", permanent=False)
+    await create_note(vault, "dup.md", "SECOND")
+    await delete_note(vault, "dup.md", permanent=False)
+
+    trash = Path(vault) / ".trash"
+    contents = sorted(p.read_text(encoding="utf-8") for p in trash.glob("dup*.md"))
+    assert contents == ["FIRST", "SECOND"], f"trash lost a copy: {contents}"
