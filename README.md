@@ -84,8 +84,12 @@ First run does a full index of the vault - takes a few minutes depending on size
 ### CLI flags
 
 ```
-some-vault-some-mcp serve [--transport sse|stdio] [--host 0.0.0.0] [--port 3789]
+some-vault-some-mcp serve [--transport sse|stdio] [--host 127.0.0.1] [--port 3789] [--reindex-force]
 ```
+
+`--reindex-force` drops the existing index and rebuilds from scratch. The server
+also rebuilds automatically (one time) when it detects an index written by an
+older storage format.
 
 CLI flags override env vars.
 

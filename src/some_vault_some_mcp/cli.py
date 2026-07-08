@@ -44,7 +44,7 @@ def serve(args) -> None:
     from some_vault_some_mcp.config import load_config
     from some_vault_some_mcp.core.embeddings import get_provider
     from some_vault_some_mcp.core.indexer import (
-        _check_dimension_mismatch, _get_db, _get_table,
+        _check_dimension_mismatch, _get_db, _get_table, check_and_maybe_migrate,
         full_index, incremental_index, TABLE_NAME,
     )
     from some_vault_some_mcp.core.watcher import start_watcher
@@ -99,6 +99,12 @@ def serve(args) -> None:
     gate = IndexGate()
     table = _get_table(db)
     needs_full_index = table is None or table.count_rows() == 0
+    if not needs_full_index and check_and_maybe_migrate(db, config.db_path):
+        logger.warning("Index schema is outdated — rebuilding from scratch (one-time reindex).")
+        needs_full_index = True
+    if getattr(args, "reindex_force", False):
+        logger.info("--reindex-force: rebuilding the index from scratch.")
+        needs_full_index = True
 
     def _background_index():
         try:
@@ -217,6 +223,8 @@ def main():
     serve_p.add_argument("--transport", choices=["sse", "stdio"], default=None)
     serve_p.add_argument("--host", default=None)
     serve_p.add_argument("--port", type=int, default=None)
+    serve_p.add_argument("--reindex-force", action="store_true",
+                         help="Drop the existing index and rebuild it from scratch")
 
     args = parser.parse_args()
     if args.command == "serve":

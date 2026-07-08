@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-from some_vault_some_mcp.core.filters import escape_string, escape_like
+from some_vault_some_mcp.core.filters import escape_string, like_token
 from some_vault_some_mcp.core.frontmatter import parse_frontmatter, extract_all_tags
 from some_vault_some_mcp.core.paths import (
     VaultPathError,
@@ -101,8 +101,6 @@ def list_notes(
     if candidate_paths is None:
         # Filesystem walk
         candidate_paths = walk_vault(vault_path)
-        if folder:
-            candidate_paths = [p for p in candidate_paths if p.startswith(folder + "/") or p.startswith(folder)]
 
     # Apply folder filter
     if folder and candidate_paths is not None:
@@ -141,15 +139,13 @@ def _list_from_index(
 
         conditions = []
         if tags:
-            tag_conditions = [f'tags LIKE "%{escape_like(t)}%"' for t in tags]
-            conditions.append(f"({' OR '.join(tag_conditions)})")
+            conditions.append(f"({' OR '.join(like_token('tags', t) for t in tags)})")
         if projects:
-            proj_conditions = [f'projects LIKE "%{escape_like(p)}%"' for p in projects]
-            conditions.append(f"({' OR '.join(proj_conditions)})")
+            conditions.append(f"({' OR '.join(like_token('projects', p) for p in projects)})")
         if status:
             conditions.append(f'status = "{escape_string(status)}"')
         if area:
-            conditions.append(f'area LIKE "%{escape_like(area)}%"')
+            conditions.append(f'area = "{escape_string(area)}"')
 
         where = " AND ".join(conditions)
         df = table.search().where(where).select(["file_path"]).to_pandas()

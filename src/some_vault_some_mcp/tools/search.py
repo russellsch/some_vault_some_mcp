@@ -4,7 +4,7 @@ import logging
 import os
 from pathlib import Path
 
-from some_vault_some_mcp.core.filters import escape_like
+from some_vault_some_mcp.core.filters import escape_like, like_token, split_tokens
 from some_vault_some_mcp.models import SearchResult, TextSearchMatch, TextSearchResult
 
 logger = logging.getLogger(__name__)
@@ -41,14 +41,12 @@ def semantic_search(
     # Build where clause for pre-filter
     conditions = []
     if tags:
-        tag_conditions = []
-        for t in tags:
-            tag_conditions.append(f'tags LIKE "%{escape_like(t)}%"')
+        tag_conditions = [like_token("tags", t) for t in tags]
         conditions.append(f"({' OR '.join(tag_conditions)})")
     if folder:
-        conditions.append(f'file_path LIKE "{escape_like(folder)}%"')
+        conditions.append(f'file_path LIKE "{escape_like(folder.rstrip("/") + "/")}%"')
 
-    search_q = table.search(query_vector).limit(top_k)
+    search_q = table.search(query_vector).metric("cosine").limit(top_k)
     if conditions:
         search_q = search_q.where(" AND ".join(conditions))
 
@@ -62,9 +60,9 @@ def semantic_search(
             file_path=row["file_path"],
             heading=row.get("heading") or None,
             snippet=row["content"][:300],
-            score=round(float(1 - row.get("_distance", 0)), 4),
-            tags=row.get("tags", "").split(",") if row.get("tags") else [],
-            projects=row.get("projects", "").split(",") if row.get("projects") else [],
+            score=round(max(0.0, 1 - float(row.get("_distance", 1))), 4),
+            tags=split_tokens(row.get("tags", "")),
+            projects=split_tokens(row.get("projects", "")),
             area=row.get("area") or None,
         )
         for _, row in results.iterrows()
@@ -89,14 +87,14 @@ def hybrid_search(
     # Build where clause for pre-filter
     conditions = []
     if tags:
-        tag_conditions = [f'tags LIKE "%{escape_like(t)}%"' for t in tags]
+        tag_conditions = [like_token("tags", t) for t in tags]
         conditions.append(f"({' OR '.join(tag_conditions)})")
     if folder:
-        conditions.append(f'file_path LIKE "{escape_like(folder)}%"')
+        conditions.append(f'file_path LIKE "{escape_like(folder.rstrip("/") + "/")}%"')
     where_clause = " AND ".join(conditions) if conditions else None
 
     # Semantic pass
-    sem_q = table.search(query_vector).limit(top_k * 2)
+    sem_q = table.search(query_vector).metric("cosine").limit(top_k * 2)
     if where_clause:
         sem_q = sem_q.where(where_clause)
     sem_results = sem_q.to_pandas()
@@ -121,7 +119,7 @@ def hybrid_search(
         key = f"{row['file_path']}:{row['chunk_index']}"
         seen[key] = {
             "row": row,
-            "sem_score": float(1 - row.get("_distance", 0)),
+            "sem_score": max(0.0, 1 - float(row.get("_distance", 1))),
             "kw_score": 0.0,
         }
     for _, row in kw_results.iterrows():
@@ -150,8 +148,8 @@ def hybrid_search(
             heading=row.get("heading") or None,
             snippet=row["content"][:300],
             score=round(score, 4),
-            tags=row.get("tags", "").split(",") if row.get("tags") else [],
-            projects=row.get("projects", "").split(",") if row.get("projects") else [],
+            tags=split_tokens(row.get("tags", "")),
+            projects=split_tokens(row.get("projects", "")),
             area=row.get("area") or None,
         )
         for score, row in ranked[:top_k]

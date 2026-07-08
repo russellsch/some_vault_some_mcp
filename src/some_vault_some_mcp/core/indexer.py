@@ -13,6 +13,7 @@ Improvements:
 - embed_texts uses list batch input (Ollama supports it)
 """
 
+import json
 import logging
 import os
 import threading
@@ -25,7 +26,68 @@ TABLE_NAME = "vault_chunks"
 EXCLUDED_DIRS = frozenset([".obsidian", ".git", ".trash"])
 BATCH_SIZE = 50
 
+# Bump when the *stored* record format changes (not query-time behaviour), so
+# existing installs auto-reindex on the next boot. v2: tags/projects stored
+# lowercased + sentinel-wrapped (",a,b,") for whole-token matching.
+SCHEMA_VERSION = 2
+
 _reindex_lock = threading.Lock()
+
+
+def _schema_version_file(db_path: str) -> str:
+    return os.path.join(db_path, "_schema_version.json")
+
+
+def _write_schema_version(db_path: str) -> None:
+    try:
+        with open(_schema_version_file(db_path), "w", encoding="utf-8") as f:
+            json.dump({"version": SCHEMA_VERSION}, f)
+    except OSError as e:
+        # Best-effort — a failed write must not crash indexing. Worst case the
+        # next boot re-checks the data format (see _data_matches_current_format).
+        logger.warning(f"Could not write schema version marker: {e}")
+
+
+def _read_schema_version(db_path: str) -> int | None:
+    try:
+        with open(_schema_version_file(db_path), encoding="utf-8") as f:
+            return int(json.load(f).get("version"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None  # missing/corrupt → treat as unknown
+
+
+def _data_matches_current_format(table) -> bool:
+    """True if the stored tags/projects already use the v2 sentinel format.
+
+    Used to avoid a needless reindex (and a boot loop) when the version marker
+    is merely missing/corrupt but the data was in fact already migrated.
+    """
+    try:
+        df = table.search().select(["tags", "projects"]).to_pandas()
+    except Exception:
+        return False
+    for col in ("tags", "projects"):
+        for v in df[col]:
+            if isinstance(v, str) and v and not v.startswith(","):
+                return False  # old plain "a,b" format found
+    return True
+
+
+def check_and_maybe_migrate(db, db_path: str) -> bool:
+    """Return True if the existing table must be fully reindexed for schema reasons.
+
+    Auto-heals a lost/corrupt marker when the data is already current, so a
+    successful reindex (or a healed marker) breaks any would-be boot loop.
+    """
+    table = _get_table(db)
+    if table is None:
+        return False  # no table — a fresh full_index writes the marker
+    if _read_schema_version(db_path) == SCHEMA_VERSION:
+        return False
+    if _data_matches_current_format(table):
+        _write_schema_version(db_path)  # marker lost but data fine — heal it
+        return False
+    return True
 
 
 def _get_db(db_path: str):
@@ -104,16 +166,16 @@ def scan_vault(vault_path: str) -> list[tuple[str, float]]:
 
 def _make_record(chunk: dict, vector: list[float]) -> dict:
     """Convert a chunk dict + vector to a LanceDB record dict."""
-    tags = chunk.get("tags", [])
-    projects = chunk.get("projects", [])
+    from some_vault_some_mcp.core.filters import store_tokens
     return {
         "file_path": chunk["file_path"],
         "chunk_index": chunk["chunk_index"],
         "heading": chunk["heading"],
         "content": chunk["content"],
         "title": chunk.get("title", ""),
-        "tags": ",".join(str(t) for t in tags if t is not None) if isinstance(tags, list) else str(tags or ""),
-        "projects": ",".join(str(p) for p in projects if p is not None) if isinstance(projects, list) else str(projects or ""),
+        # v2: lowercased + sentinel-wrapped for whole-token LIKE matching.
+        "tags": store_tokens(chunk.get("tags", [])),
+        "projects": store_tokens(chunk.get("projects", [])),
         "area": str(chunk.get("area") or ""),
         "status": str(chunk.get("status") or ""),
         "source": str(chunk.get("source") or ""),
@@ -174,6 +236,7 @@ def full_index(
     records = [_make_record(c, v) for c, v in zip(all_chunks, all_vectors) if v is not None]
     table = db.create_table(TABLE_NAME, data=records)
     _rebuild_fts_index(table)
+    _write_schema_version(db_path)
 
     duration = time.time() - start
     unique_files = len(set(r["file_path"] for r in records))
