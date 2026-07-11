@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-from some_vault_some_mcp.core.atomic_write import atomic_write, with_file_lock
+from some_vault_some_mcp.core.atomic_write import atomic_create, atomic_write, with_file_lock
 from some_vault_some_mcp.core.canvas import (
     auto_position,
     find_edge,
@@ -15,6 +15,7 @@ from some_vault_some_mcp.core.canvas import (
 )
 from some_vault_some_mcp.core.paths import (
     VaultPathError,
+    check_blocked_suffixes,
     ensure_canvas_extension,
     resolve_note_path,
     resolve_vault_path,
@@ -54,7 +55,11 @@ async def create_canvas(
     path: str,
     nodes: list[dict] | None = None,
     edges: list[dict] | None = None,
+    blocked_suffixes: list[str] | None = None,
+    blocked_message: str = "",
 ) -> str:
+    if blocked_suffixes:
+        check_blocked_suffixes(path, blocked_suffixes, blocked_message)  # raises ValueError
     resolved_path = ensure_canvas_extension(path)
     try:
         full_path = resolve_vault_path(vault_path, resolved_path)
@@ -86,9 +91,11 @@ async def create_canvas(
     async def _create():
         p = Path(full_path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        if p.exists():
+        # Exclusive atomic create — no check-then-write TOCTOU window.
+        try:
+            await atomic_create(full_path, content)
+        except FileExistsError:
             raise FileExistsError(f"Canvas already exists at '{resolved_path}'")
-        await atomic_write(full_path, content)
 
     await with_file_lock(full_path, _create)
     return resolved_path

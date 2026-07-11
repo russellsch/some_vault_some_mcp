@@ -63,6 +63,9 @@ def serve(args) -> None:
     if not config.vault_path:
         logger.error("VAULT_PATH is not set — exiting")
         sys.exit(1)
+    if not os.path.isdir(config.vault_path):
+        logger.error(f"VAULT_PATH does not exist or is not a directory: {config.vault_path}")
+        sys.exit(1)
 
     logger.info(f"Vault path: {config.vault_path}")
     logger.info(f"LanceDB path: {config.db_path}")
@@ -74,7 +77,11 @@ def serve(args) -> None:
         ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
         logger.info(f"Waiting for Ollama at {ollama_url}...")
         if not _wait_for_ollama(ollama_url):
-            logger.warning("Ollama not reachable after 60s — starting without embeddings")
+            logger.warning(
+                "Ollama not reachable after 60s — starting anyway, but embedding "
+                "(indexing and semantic/hybrid search) will fail until it is up. "
+                "Use EMBEDDING_PROVIDER=fastembed for a local, server-less provider."
+            )
 
     # Step 2: initialize provider
     try:

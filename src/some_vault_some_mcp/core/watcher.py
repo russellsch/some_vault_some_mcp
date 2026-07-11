@@ -11,15 +11,16 @@ import threading
 import time
 from pathlib import Path
 
-from some_vault_some_mcp.core.indexer import incremental_index
+from some_vault_some_mcp.core.indexer import EXCLUDED_DIRS, incremental_index
 
 logger = logging.getLogger(__name__)
 
 DEBOUNCE_SECS = 2.0
+MAX_DELAY_SECS = 30.0  # cap on how long a sustained write burst can starve indexing
 
 
 class _VaultEventHandler:
-    """Collects file events and debounces into single reindex calls."""
+    """Collects file events and debounces into a single batched reindex call."""
 
     def __init__(self, vault_path: str, db_path: str, provider):
         self.vault_path = vault_path
@@ -28,6 +29,7 @@ class _VaultEventHandler:
         self._pending: set[str] = set()
         self._lock = threading.Lock()
         self._timer: threading.Timer | None = None
+        self._first_pending: float | None = None
 
     def _on_event(self, path: str) -> None:
         if not path.lower().endswith(".md"):
@@ -36,9 +38,20 @@ class _VaultEventHandler:
             rel = str(Path(path).relative_to(self.vault_path)).replace("\\", "/")
         except ValueError:
             return
+        # Drop excluded-dir events at the door (e.g. the .trash events every
+        # soft-delete emits) so they don't trigger a scan + reindex to no-op.
+        if any(seg.lower() in EXCLUDED_DIRS for seg in rel.split("/")):
+            return
         with self._lock:
             self._pending.add(rel)
+            now = time.monotonic()
+            if self._first_pending is None:
+                self._first_pending = now
             if self._timer is not None:
+                # Once MAX_DELAY has elapsed, stop postponing — let the running
+                # timer fire so a sustained burst can't starve indexing forever.
+                if now - self._first_pending >= MAX_DELAY_SECS:
+                    return
                 self._timer.cancel()
             self._timer = threading.Timer(DEBOUNCE_SECS, self._flush)
             self._timer.daemon = True
@@ -46,18 +59,21 @@ class _VaultEventHandler:
 
     def _flush(self) -> None:
         with self._lock:
-            paths = list(self._pending)
+            paths = set(self._pending)
             self._pending.clear()
             self._timer = None
-        for rel in paths:
-            try:
-                result = incremental_index(
-                    self.vault_path, self.db_path, self.provider,
-                    single_file=rel,
-                )
-                logger.info(f"Reindexed {rel}: {result}")
-            except Exception as e:
-                logger.error(f"Reindex failed for {rel}: {e}")
+            self._first_pending = None
+        if not paths:
+            return
+        try:
+            # One batched call for the whole burst — one scan, one FTS rebuild.
+            result = incremental_index(
+                self.vault_path, self.db_path, self.provider,
+                only_files=paths,
+            )
+            logger.info(f"Reindexed {len(paths)} file(s): {result}")
+        except Exception as e:
+            logger.error(f"Reindex failed for {sorted(paths)}: {e}")
 
 
 def start_watcher(vault_path: str, db_path: str, provider) -> None:

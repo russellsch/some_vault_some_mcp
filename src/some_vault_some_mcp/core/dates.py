@@ -143,6 +143,12 @@ def format_moment_date(dt: datetime, fmt: str) -> str:
 
 
 def parse_date_str(date_str: str) -> datetime:
-    """Parse YYYY-MM-DD string to local midnight datetime."""
-    parts = date_str.split("-")
-    return datetime(int(parts[0]), int(parts[1]), int(parts[2]))
+    """Parse a YYYY-MM-DD string to a local-midnight datetime.
+
+    Raises ValueError with a clear message on malformed input (previously raised
+    a bare IndexError/ValueError that surfaced as an unhandled 500).
+    """
+    try:
+        return datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        raise ValueError(f"Invalid date '{date_str}': expected YYYY-MM-DD")

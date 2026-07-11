@@ -84,3 +84,11 @@ def test_tags_case_normalized():
     tags = extract_all_tags(content)
     assert "foo" in tags
     assert "bar" in tags
+
+
+def test_update_frontmatter_preserves_comments_order_and_flow_style():
+    content = "---\ntitle: Z\ntags: [b, a]\n# keep me\ncreated: 2024-05-01\n---\nBody."
+    out = update_frontmatter(content, {"status": "done"})
+    assert "# keep me" in out          # comment preserved
+    assert "[b, a]" in out             # flow style preserved
+    assert out.index("title") < out.index("created") < out.index("status")  # order + append

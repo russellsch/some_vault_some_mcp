@@ -57,7 +57,11 @@ def load_overrides(
       blocked_suffixes: list[str]
       message: str
     """
-    path = override_path or os.getenv("some_vault_some_mcp_OVERRIDES", "")
+    path = (
+        override_path
+        or os.getenv("VAULT_MCP_OVERRIDES")
+        or os.getenv("some_vault_some_mcp_OVERRIDES", "")  # legacy name, kept for compat
+    )
     if not path:
         return {}, set(), {}
 
@@ -100,6 +104,13 @@ def load_config() -> VaultMcpConfig:
     overrides, disabled, path_validation = load_overrides()
     raw = os.getenv("VAULT_SOFT_DELETE_IS_PERMANENT", "").strip().lower()
 
+    port_raw = os.getenv("MCP_PORT", "3789")
+    try:
+        port = int(port_raw)
+    except ValueError:
+        logger.warning(f"Invalid MCP_PORT={port_raw!r} — falling back to 3789")
+        port = 3789
+
     # YAML path_validation takes precedence; env vars are the fallback.
     blocked = path_validation.get("blocked_suffixes") or [
         s.strip()
@@ -115,7 +126,7 @@ def load_config() -> VaultMcpConfig:
         db_path=os.getenv("LANCE_DB_PATH", "./data/vault.lance"),
         transport=os.getenv("MCP_TRANSPORT", "sse"),
         host=os.getenv("MCP_HOST", "127.0.0.1"),
-        port=int(os.getenv("MCP_PORT", "3789")),
+        port=port,
         api_key=os.getenv("VAULT_API_KEY", ""),
         allow_unauth_sse=os.getenv("VAULT_ALLOW_UNAUTH_SSE", "").strip().lower()
         in ("1", "true", "yes"),

@@ -9,6 +9,12 @@ from some_vault_some_mcp.models import SearchResult, TextSearchMatch, TextSearch
 
 logger = logging.getLogger(__name__)
 
+
+class EmbeddingError(Exception):
+    """Raised when the embedding provider call fails — lets the server attribute
+    the error to embeddings specifically, instead of blaming Ollama for any
+    exception raised anywhere in search."""
+
 # Hybrid scoring weights and boost factor — exposed for unit testing
 _SEMANTIC_WEIGHT = 0.7
 _KW_WEIGHT = 0.3
@@ -36,7 +42,10 @@ def semantic_search(
     if table is None:
         return []
 
-    query_vector = provider.embed_query(query)
+    try:
+        query_vector = provider.embed_query(query)
+    except Exception as e:
+        raise EmbeddingError(str(e))
 
     # Build where clause for pre-filter
     conditions = []
@@ -82,7 +91,10 @@ def hybrid_search(
     if table is None:
         return []
 
-    query_vector = provider.embed_query(query)
+    try:
+        query_vector = provider.embed_query(query)
+    except Exception as e:
+        raise EmbeddingError(str(e))
 
     # Build where clause for pre-filter
     conditions = []
@@ -192,10 +204,16 @@ def exact_search(
 
         lines = content.split("\n")
         matches = []
+        capped = False
         for i, line in enumerate(lines):
             compare = line if case_sensitive else line.lower()
             if search_str in compare:
+                if len(matches) >= 20:  # cap per-file matches so one log-like note can't flood
+                    capped = True
+                    break
                 matches.append(TextSearchMatch(line=i + 1, content=line.strip()))
+        if capped:
+            matches.append(TextSearchMatch(line=0, content="[more matches truncated]"))
 
         if matches:
             results.append(TextSearchResult(relative_path=rel_path, matches=matches))

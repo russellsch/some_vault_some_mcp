@@ -212,3 +212,22 @@ def test_error_message_no_absolute_path_leak():
         except VaultPathError as e:
             # Should not contain the vault path itself in the error
             assert vault not in str(e) or "traversal" in str(e)
+
+
+def test_walk_vault_excludes_symlink_escaping_vault(tmp_path):
+    """A symlinked .md whose target is outside the vault must not be walked
+    (O8(b) — the discovery path enforces the same boundary as resolve_vault_path)."""
+    from some_vault_some_mcp.core.paths import walk_vault
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.md").write_text("SECRET", encoding="utf-8")
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "real.md").write_text("legit", encoding="utf-8")
+    os.symlink(outside / "secret.md", vault / "leak.md")           # escapes vault
+    os.symlink(vault / "real.md", vault / "innervault-link.md")    # stays in vault
+
+    found = set(walk_vault(str(vault)))
+    assert "real.md" in found
+    assert "leak.md" not in found                 # symlink out of vault excluded
+    assert "innervault-link.md" in found          # in-vault symlink still allowed

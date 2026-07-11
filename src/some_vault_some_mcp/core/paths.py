@@ -41,6 +41,11 @@ def resolve_vault_path(vault_path: str, relative_path: str) -> str:
     if "\0" in relative_path:
         raise VaultPathError("Invalid path: contains null byte")
 
+    # Check excluded segments on the user-supplied path too (before resolve), so a
+    # symlink can't smuggle access to .obsidian/.git/.trash past the post-resolve
+    # check (O8a). The post-resolve check below still guards realpath containment.
+    _check_excluded(relative_path)
+
     vault = Path(vault_path).resolve()
     candidate = (vault / relative_path).resolve()
 
@@ -80,14 +85,30 @@ def resolve_internal(vault_path: str, relative_path: str) -> str:
     return str(candidate)
 
 
+def _within_vault(path: Path, vault_root: Path) -> bool:
+    """True if path's real target is inside the vault (blocks symlink escapes).
+
+    The index-discovery walkers enforce the same boundary as resolve_vault_path,
+    so a symlink pointing outside the vault is never read into the index.
+    """
+    try:
+        return path.resolve().is_relative_to(vault_root)
+    except OSError:
+        return False  # broken symlink / cycle
+
+
 def walk_vault(vault_path: str) -> list[str]:
-    """Return vault-relative paths of all .md files, excluding EXCLUDED_DIRS."""
+    """Return vault-relative paths of all .md files, excluding EXCLUDED_DIRS and
+    any file whose real path escapes the vault (symlink boundary)."""
     vault = Path(vault_path)
+    vault_root = vault.resolve()
     results: list[str] = []
     for path in vault.rglob("*.md"):
         rel = str(path.relative_to(vault)).replace("\\", "/")
         parts = rel.split("/")
         if any(seg.lower() in EXCLUDED_DIRS for seg in parts):
+            continue
+        if not _within_vault(path, vault_root):
             continue
         results.append(rel)
     return sorted(results)
@@ -155,13 +176,17 @@ def ensure_canvas_extension(path: str) -> str:
 
 
 def walk_canvas(vault_path: str) -> list[str]:
-    """Return vault-relative paths of all .canvas files, excluding EXCLUDED_DIRS."""
+    """Return vault-relative paths of all .canvas files, excluding EXCLUDED_DIRS
+    and any file whose real path escapes the vault (symlink boundary)."""
     vault = Path(vault_path)
+    vault_root = vault.resolve()
     results: list[str] = []
     for path in vault.rglob("*.canvas"):
         rel = str(path.relative_to(vault)).replace("\\", "/")
         parts = rel.split("/")
         if any(seg.lower() in EXCLUDED_DIRS for seg in parts):
+            continue
+        if not _within_vault(path, vault_root):
             continue
         results.append(rel)
     return sorted(results)

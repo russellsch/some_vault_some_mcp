@@ -142,3 +142,16 @@ def test_unknown_token_passthrough():
     result = fmt("YYYY-X-DD")
     assert "2026" in result
     assert "08" in result
+
+
+def test_parse_date_str_valid():
+    from some_vault_some_mcp.core.dates import parse_date_str
+    assert parse_date_str("2026-07-08") == datetime(2026, 7, 8)
+
+
+@pytest.mark.parametrize("bad", ["today", "2026/07/08", "2026-7", "garbage", "2026-13-01"])
+def test_parse_date_str_invalid_raises_valueerror(bad):
+    from some_vault_some_mcp.core.dates import parse_date_str
+    with pytest.raises(ValueError) as e:
+        parse_date_str(bad)
+    assert "YYYY-MM-DD" in str(e.value)

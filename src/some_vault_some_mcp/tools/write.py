@@ -6,17 +6,40 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-from some_vault_some_mcp.core.atomic_write import atomic_write, with_file_lock
-from some_vault_some_mcp.core.frontmatter import parse_frontmatter, update_frontmatter, serialize_frontmatter
-from some_vault_some_mcp.core.paths import resolve_vault_path, VaultPathError, ensure_md_extension
+from some_vault_some_mcp.core.atomic_write import atomic_create, atomic_write, with_file_lock
+from some_vault_some_mcp.core.frontmatter import (
+    parse_frontmatter,
+    serialize_frontmatter,
+    split_frontmatter,
+    update_frontmatter,
+)
+from some_vault_some_mcp.core.paths import (
+    check_blocked_suffixes,
+    ensure_md_extension,
+    resolve_vault_path,
+    VaultPathError,
+    walk_vault,
+)
 from some_vault_some_mcp.core.wikilinks import extract_wikilinks, resolve_wikilink, build_alias_map
-from some_vault_some_mcp.core.paths import walk_vault
 
 logger = logging.getLogger(__name__)
 
 
-async def create_note(vault_path: str, path: str, content: str, frontmatter: dict | None = None) -> str:
-    """Create a new note. Raises FileExistsError if note already exists."""
+async def create_note(
+    vault_path: str,
+    path: str,
+    content: str,
+    frontmatter: dict | None = None,
+    blocked_suffixes: list[str] | None = None,
+    blocked_message: str = "",
+) -> str:
+    """Create a new note. Raises FileExistsError if note already exists.
+
+    Blocked-suffix enforcement lives here (the write layer) so every creation
+    path — including create_daily_note — is covered, not just the server wrapper.
+    """
+    if blocked_suffixes:
+        check_blocked_suffixes(path, blocked_suffixes, blocked_message)  # raises ValueError
     resolved_path = ensure_md_extension(path)
     try:
         full_path = resolve_vault_path(vault_path, resolved_path)
@@ -30,11 +53,13 @@ async def create_note(vault_path: str, path: str, content: str, frontmatter: dic
     async def _create():
         p = Path(full_path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        if p.exists():
+        # Exclusive atomic create — no check-then-write TOCTOU window.
+        try:
+            await atomic_create(full_path, final_content)
+        except FileExistsError:
             err = FileExistsError(f"Note already exists at '{resolved_path}'")
             err.errno = 17  # EEXIST
             raise err
-        await atomic_write(full_path, final_content)
 
     await with_file_lock(full_path, _create)
     return resolved_path
@@ -72,10 +97,10 @@ async def prepend_to_note(vault_path: str, path: str, content: str) -> None:
         if not p.exists():
             raise FileNotFoundError(f"Note not found: {resolved_path}")
         existing = p.read_text(encoding="utf-8", errors="replace")
-        fm, body = parse_frontmatter(existing)
-        if fm:
-            # Reconstruct with frontmatter + prepended content + body
-            new_content = serialize_frontmatter(fm, content + "\n" + body)
+        raw_fm, body = split_frontmatter(existing)
+        if raw_fm is not None:
+            # Keep the frontmatter block byte-for-byte; insert content after it.
+            new_content = f"---\n{raw_fm}---\n" + content + "\n" + body
         else:
             new_content = content + "\n" + existing
         await atomic_write(full_path, new_content)
@@ -159,11 +184,19 @@ async def move_note(
     all_notes = walk_vault(vault_path) if update_links else []
     note_contents: dict[str, str] = {}
     if update_links:
-        for rel in all_notes:
-            try:
-                note_contents[rel] = (Path(vault_path) / rel).read_text(encoding="utf-8", errors="replace")
-            except Exception:
-                pass
+        import anyio
+
+        def _read_all() -> dict[str, str]:
+            contents: dict[str, str] = {}
+            for rel in all_notes:
+                try:
+                    contents[rel] = (Path(vault_path) / rel).read_text(encoding="utf-8", errors="replace")
+                except Exception:
+                    pass
+            return contents
+
+        # Offload the whole-vault read off the event loop (F10).
+        note_contents = await anyio.to_thread.run_sync(_read_all)
         alias_map = build_alias_map(all_notes, note_contents)
 
     # Perform the move
@@ -172,41 +205,42 @@ async def move_note(
 
     updated_referrers = []
     failed_referrers = []
+    skipped_alias_referrers = []
 
     if update_links:
+        new_no_ext = resolved_new[:-3] if resolved_new.lower().endswith(".md") else resolved_new
         for rel in all_notes:
             if rel == resolved_old:
                 continue
             content = note_contents.get(rel, "")
-            links = extract_wikilinks(content)
+            new_content = content
             needs_rewrite = False
-            for link in links:
-                target_base = link["target"].split("#")[0].strip()
-                resolved = resolve_wikilink(target_base, rel, all_notes, alias_map)
-                if resolved == resolved_old:
-                    needs_rewrite = True
-                    break
+            alias_only = False
+            for link in extract_wikilinks(content):
+                target_raw = link["target"]
+                # Separate the file part from a #heading / ^block anchor.
+                m = re.match(r"^([^#^]*)([#^].*)?$", target_raw)
+                link_base = (m.group(1) if m else target_raw).strip()
+                anchor = m.group(2) if (m and m.group(2)) else ""
+                if resolve_wikilink(link_base, rel, all_notes, alias_map) != resolved_old:
+                    continue
+                needs_rewrite = True
+                # Path/basename links resolve WITHOUT the alias map — rewrite those.
+                # Alias links resolve only via the alias map; leave them (the alias
+                # moves with the file) but record them so the change is visible.
+                if resolve_wikilink(link_base, rel, all_notes, None) != resolved_old:
+                    alias_only = True
+                    continue
+                display = link["display_text"]
+                embed = "!" if link["is_embed"] else ""
+                disp = f"|{display}" if display is not None else ""
+                old_span = f"{embed}[[{target_raw}{disp}]]"
+                new_span = f"{embed}[[{new_no_ext}{anchor}{disp}]]"
+                if old_span in new_content:
+                    new_content = new_content.replace(old_span, new_span)
 
             if not needs_rewrite:
                 continue
-
-            # Simple rewrite: replace [[old_stem]] or [[old_path]] references
-            old_stem = Path(resolved_old).stem
-            new_stem = Path(resolved_new).stem
-            old_no_ext = resolved_old[:-3] if resolved_old.lower().endswith(".md") else resolved_old
-            new_no_ext = resolved_new[:-3] if resolved_new.lower().endswith(".md") else resolved_new
-
-            new_content = content
-            # Replace path-form links first, then basename-form (case-insensitive)
-            new_content = re.sub(re.escape(f"[[{old_no_ext}]]"), f"[[{new_no_ext}]]",
-                                 new_content, flags=re.IGNORECASE)
-            new_content = re.sub(re.escape(f"[[{old_no_ext}|"), f"[[{new_no_ext}|",
-                                 new_content, flags=re.IGNORECASE)
-            if old_stem != new_stem:
-                new_content = re.sub(re.escape(f"[[{old_stem}]]"), f"[[{new_stem}]]",
-                                     new_content, flags=re.IGNORECASE)
-                new_content = re.sub(re.escape(f"[[{old_stem}|"), f"[[{new_stem}|",
-                                     new_content, flags=re.IGNORECASE)
 
             if new_content != content:
                 try:
@@ -220,8 +254,16 @@ async def move_note(
                 except Exception as e:
                     logger.warning(f"Failed to rewrite links in {rel}: {e}")
                     failed_referrers.append({"path": rel, "error": str(e)})
+            elif alias_only:
+                # Only alias reference(s) — still resolve post-move, nothing to do.
+                skipped_alias_referrers.append(rel)
+            else:
+                # Detected a reference we could not textually rewrite — surface it
+                # instead of silently leaving a broken link.
+                failed_referrers.append({"path": rel, "error": "could not rewrite link text"})
 
     return {
         "updated_referrers": updated_referrers,
         "failed_referrers": failed_referrers,
+        "skipped_alias_referrers": skipped_alias_referrers,
     }

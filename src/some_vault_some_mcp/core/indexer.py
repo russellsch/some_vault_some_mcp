@@ -122,18 +122,10 @@ def _check_dimension_mismatch(db, provider_dims: int) -> None:
     if vector_field is None:
         return  # No vector column — unexpected but non-fatal
 
-    import pyarrow as pa
-    vtype = vector_field.type
-    if hasattr(vtype, "list_size"):
-        existing_dims = vtype.list_size
-    elif hasattr(vtype, "value_type"):
-        # FixedSizeList
-        try:
-            existing_dims = pa.types.is_fixed_size_list(vtype) and getattr(vtype, "list_size", None)
-        except Exception:
-            existing_dims = None
-    else:
-        existing_dims = None
+    # FixedSizeList exposes list_size; variable-size lists don't → None (skip check).
+    # (The old elif branch could assign the boolean False here, producing a spurious
+    # "existing index has False-dim vectors" message.)
+    existing_dims = getattr(vector_field.type, "list_size", None)
 
     if existing_dims is not None and existing_dims != provider_dims:
         raise RuntimeError(
@@ -152,13 +144,21 @@ def _rebuild_fts_index(table) -> None:
 
 
 def scan_vault(vault_path: str) -> list[tuple[str, float]]:
-    """Scan vault for .md files, returning [(vault_relative_path, mtime)]."""
+    """Scan vault for .md files, returning [(vault_relative_path, mtime)].
+
+    Skips excluded dirs and any file whose real path escapes the vault, so a
+    symlink pointing outside the vault is never indexed (out-of-vault content
+    must not enter the index / model context)."""
+    from some_vault_some_mcp.core.paths import _within_vault
     vault = Path(vault_path)
+    vault_root = vault.resolve()
     results = []
     for path in vault.rglob("*.md"):
         rel = str(path.relative_to(vault)).replace("\\", "/")
         parts = rel.split("/")
         if any(seg.lower() in EXCLUDED_DIRS for seg in parts):
+            continue
+        if not _within_vault(path, vault_root):
             continue
         results.append((rel, path.stat().st_mtime))
     return results
@@ -233,6 +233,7 @@ def full_index(
         all_vectors.extend(vectors)
         logger.info(f"  Embedded {min(i + batch_size, len(texts))}/{len(texts)}")
 
+    assert len(all_vectors) == len(all_chunks), "vector/chunk count mismatch — embedding misalignment"
     records = [_make_record(c, v) for c, v in zip(all_chunks, all_vectors) if v is not None]
     table = db.create_table(TABLE_NAME, data=records)
     _rebuild_fts_index(table)
@@ -255,16 +256,20 @@ def incremental_index(
     provider=None,
     batch_size: int = BATCH_SIZE,
     single_file: str | None = None,
+    only_files: set[str] | None = None,
 ) -> dict:
     """Update index with only changed/new/deleted files.
 
-    If single_file is provided, limits scope to just that vault-relative path.
-    This fixes the upstream bug where the path param was ignored.
+    Scope can be limited to a set of vault-relative paths via only_files (or a
+    single path via single_file, kept as a thin alias). Reads only the
+    file_path/file_mtime columns from the index — never materialises vectors.
     """
     from some_vault_some_mcp.core.chunker import chunk_markdown
     if provider is None:
         from some_vault_some_mcp.core.embeddings import get_provider
         provider = get_provider()
+    if single_file is not None and only_files is None:
+        only_files = {single_file}
 
     start = time.time()
     db = _get_db(db_path)
@@ -276,25 +281,16 @@ def incremental_index(
     with _reindex_lock:
         # Get current vault state
         current_files = dict(scan_vault(vault_path))
+        if only_files is not None:
+            current_files = {k: v for k, v in current_files.items() if k in only_files}
 
-        # If single_file mode, limit scope
-        if single_file:
-            if single_file in current_files:
-                current_files = {single_file: current_files[single_file]}
-            else:
-                # File deleted — just handle removal
-                current_files = {}
-
-        # Get indexed states
-        import pandas as pd
-        df = table.to_pandas()
+        # Get indexed states — project only the needed columns (never vectors).
+        df = table.search().select(["file_path", "file_mtime"]).to_pandas()
         indexed_mtimes: dict[str, float] = {}
-        for _, row in df[["file_path", "file_mtime"]].drop_duplicates("file_path").iterrows():
+        for _, row in df.drop_duplicates("file_path").iterrows():
             indexed_mtimes[row["file_path"]] = row["file_mtime"]
-
-        # If single_file, only consider that file in indexed_mtimes
-        if single_file:
-            indexed_mtimes = {k: v for k, v in indexed_mtimes.items() if k == single_file}
+        if only_files is not None:
+            indexed_mtimes = {k: v for k, v in indexed_mtimes.items() if k in only_files}
 
         to_reindex = [
             (rel, mtime) for rel, mtime in current_files.items()
@@ -336,6 +332,7 @@ def incremental_index(
             for i in range(0, len(texts), batch_size):
                 all_vectors.extend(provider.embed_texts(texts[i:i + batch_size]))
 
+            assert len(all_vectors) == len(new_chunks), "vector/chunk count mismatch — embedding misalignment"
             records = [_make_record(c, v) for c, v in zip(new_chunks, all_vectors) if v is not None]
             table.add(records)
 
@@ -361,9 +358,8 @@ def get_index_status(vault_path: str, db_path: str, provider_dims: int | None = 
             "db_size_mb": 0.0,
         }
 
-    import pandas as pd
-    df = table.to_pandas()
-    total_chunks = len(df)
+    total_chunks = table.count_rows()
+    df = table.search().select(["file_path", "file_mtime"]).to_pandas()
     total_files = df["file_path"].nunique() if not df.empty else 0
 
     # Pending reindex count
@@ -371,7 +367,7 @@ def get_index_status(vault_path: str, db_path: str, provider_dims: int | None = 
     if vault_path:
         current_files = dict(scan_vault(vault_path))
         indexed_mtimes: dict[str, float] = {}
-        for _, row in df[["file_path", "file_mtime"]].drop_duplicates("file_path").iterrows():
+        for _, row in df.drop_duplicates("file_path").iterrows():
             indexed_mtimes[row["file_path"]] = row["file_mtime"]
         for rel_path, mtime in current_files.items():
             if rel_path not in indexed_mtimes or mtime > indexed_mtimes[rel_path]:

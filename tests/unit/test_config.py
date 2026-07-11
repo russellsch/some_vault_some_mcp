@@ -132,3 +132,21 @@ def test_path_validation_missing_section():
     _, _, path_val = load_overrides(path)
     assert path_val["blocked_suffixes"] == []
     assert path_val["message"] == ""
+
+
+def test_invalid_mcp_port_falls_back(monkeypatch):
+    from some_vault_some_mcp.config import load_config
+    monkeypatch.setenv("MCP_PORT", "not-a-number")
+    monkeypatch.delenv("some_vault_some_mcp_OVERRIDES", raising=False)
+    monkeypatch.delenv("VAULT_MCP_OVERRIDES", raising=False)
+    assert load_config().port == 3789
+
+
+def test_vault_mcp_overrides_env_preferred(monkeypatch, tmp_path):
+    from some_vault_some_mcp.config import load_overrides
+    ov = tmp_path / "ov.yaml"
+    ov.write_text("disabled:\n  - search\n", encoding="utf-8")
+    monkeypatch.setenv("VAULT_MCP_OVERRIDES", str(ov))
+    monkeypatch.delenv("some_vault_some_mcp_OVERRIDES", raising=False)
+    _, disabled, _ = load_overrides()
+    assert "search" in disabled

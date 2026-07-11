@@ -40,6 +40,11 @@ class IndexGate:
         self._error = error
         self._ready.set()
 
+    def reset_to_ready(self):
+        """Clear a prior failure so a manual vault_reindex can recover without a restart."""
+        self._error = None
+        self._ready.set()
+
 
 def _check_index_gate(gate: "IndexGate | None", tool_name: str) -> str | None:
     """Return an error message if the index is unavailable, else None."""
@@ -65,6 +70,20 @@ def _json_default(obj):
     raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 
+def _format_search_results(results, label: str) -> str:
+    """Render semantic/hybrid SearchResults (shared by both modes)."""
+    lines = [f"Found {len(results)} results ({label}):\n"]
+    for i, r in enumerate(results, 1):
+        heading = f" > {r.heading}" if r.heading else ""
+        ellipsis = "..." if len(r.snippet) >= 300 else ""  # only when actually truncated
+        lines.append(f"**{i}. {r.title or r.file_path}**{heading}")
+        lines.append(f"   Path: {r.file_path}")
+        lines.append(f"   Score: {r.score:.3f}")
+        lines.append(f"   {r.snippet}{ellipsis}")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: IndexGate | None = None) -> FastMCP:
     """Create and configure the FastMCP server with all tools registered."""
     mcp = FastMCP("some-vault-some-mcp")
@@ -74,13 +93,33 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
     overrides = config.tool_overrides
     disabled = config.disabled_tools
 
+    _READ_ONLY = {
+        "search", "get_note", "get_daily_note", "get_tags", "get_backlinks",
+        "get_outlinks", "find_orphans", "find_broken_links", "get_graph_neighbors",
+        "vault_index_status", "list_canvases", "read_canvas",
+    }
+    _DESTRUCTIVE = {"delete_note", "move_note", "remove_canvas_nodes", "remove_canvas_edges"}
+    _IDEMPOTENT = {"update_frontmatter", "update_canvas_node", "update_canvas_edge"}
+    _seen_names: set[str] = set()
+
     def _reg(default_name: str, default_desc: str, fn, **kwargs):
-        """Register a tool with override applied, skip if disabled."""
+        """Register a tool with override applied and MCP hint annotations; skip if disabled."""
         if default_name in disabled:
             logger.info(f"Tool '{default_name}' disabled by override file")
             return
         name, desc = apply_override(default_name, default_desc, overrides)
-        mcp.tool(name=name, description=desc, **kwargs)(fn)
+        if name in _seen_names:
+            raise ValueError(
+                f"Duplicate tool name '{name}' after overrides — two tools resolved "
+                f"to the same name."
+            )
+        _seen_names.add(name)
+        annotations = {
+            "readOnlyHint": default_name in _READ_ONLY,
+            "destructiveHint": default_name in _DESTRUCTIVE,
+            "idempotentHint": default_name in _IDEMPOTENT,
+        }
+        mcp.tool(name=name, description=desc, annotations=annotations, **kwargs)(fn)
 
     # ── search ──────────────────────────────────────────────────────────
     def search(
@@ -95,7 +134,11 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
 
         mode: hybrid (default), semantic, or exact.
         """
-        from some_vault_some_mcp.tools.search import hybrid_search, semantic_search, exact_search
+        from some_vault_some_mcp.tools.search import (
+            EmbeddingError, exact_search, hybrid_search, semantic_search,
+        )
+        if mode not in ("hybrid", "semantic", "exact"):
+            return f"Unknown mode '{mode}'. Use 'hybrid', 'semantic', or 'exact'."
         if mode in ("hybrid", "semantic"):
             gate_msg = _check_index_gate(gate, "search")
             if gate_msg:
@@ -103,19 +146,13 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
         if mode == "semantic":
             try:
                 results = semantic_search(query, db_path, provider, top_k, tags, folder)
-            except Exception as e:
+            except EmbeddingError as e:
                 return f"Embedding provider error: {e}\nUse mode='exact' or retry when Ollama is back."
+            except Exception as e:
+                return f"Search failed: {e}"
             if not results:
                 return "No results found."
-            lines = [f"Found {len(results)} results (semantic):\n"]
-            for i, r in enumerate(results, 1):
-                heading = f" > {r.heading}" if r.heading else ""
-                lines.append(f"**{i}. {r.title or r.file_path}**{heading}")
-                lines.append(f"   Path: {r.file_path}")
-                lines.append(f"   Score: {r.score:.3f}")
-                lines.append(f"   {r.snippet}...")
-                lines.append("")
-            return "\n".join(lines)
+            return _format_search_results(results, "semantic")
 
         elif mode == "exact":
             results = exact_search(query, vault_path, top_k, folder, case_sensitive, tags)
@@ -132,19 +169,13 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
         else:  # hybrid (default)
             try:
                 results = hybrid_search(query, db_path, provider, top_k, tags, folder)
-            except Exception as e:
+            except EmbeddingError as e:
                 return f"Embedding provider error: {e}\nUse mode='exact' or retry when Ollama is back."
+            except Exception as e:
+                return f"Search failed: {e}"
             if not results:
                 return "No results found."
-            lines = [f"Found {len(results)} results (hybrid):\n"]
-            for i, r in enumerate(results, 1):
-                heading = f" > {r.heading}" if r.heading else ""
-                lines.append(f"**{i}. {r.title or r.file_path}**{heading}")
-                lines.append(f"   Path: {r.file_path}")
-                lines.append(f"   Score: {r.score:.3f}")
-                lines.append(f"   {r.snippet}...")
-                lines.append("")
-            return "\n".join(lines)
+            return _format_search_results(results, "hybrid")
 
     _reg("search", "Find notes by text, meaning, or exact string.", search)
 
@@ -214,12 +245,6 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
         frontmatter: JSON string of frontmatter fields, e.g. '{"title":"My Note","tags":["idea"]}'.
         """
         from some_vault_some_mcp.tools.write import create_note as _create_note
-        from some_vault_some_mcp.core.paths import check_blocked_suffixes
-        if config.blocked_path_suffixes:
-            try:
-                check_blocked_suffixes(path, config.blocked_path_suffixes, config.blocked_suffix_message)
-            except ValueError as e:
-                return f"Error: {e}"
         fm = None
         if frontmatter:
             try:
@@ -227,8 +252,13 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
             except json.JSONDecodeError:
                 return "Error: Invalid JSON in frontmatter parameter."
         try:
-            resolved = await _create_note(vault_path, path, content, fm)
+            resolved = await _create_note(
+                vault_path, path, content, fm,
+                config.blocked_path_suffixes, config.blocked_suffix_message,
+            )
             return f"Created note at '{resolved}'."
+        except ValueError as e:
+            return f"Error: {e}"
         except FileExistsError as e:
             return f"Error: {e} Use append or update tools instead."
         except Exception as e:
@@ -294,12 +324,25 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
         try:
             result = await _move(vault_path, old_path, new_path, update_links)
             lines = [f"Moved '{old_path}' to '{new_path}'."]
-            n_updated = len(result["updated_referrers"])
             if update_links:
+                n_updated = len(result["updated_referrers"])
                 lines.append(
                     f"Updated references in {n_updated} file(s)."
                     if n_updated else "No other notes referenced this file."
                 )
+                failed = result.get("failed_referrers", [])
+                if failed:
+                    names = ", ".join(f["path"] for f in failed)
+                    lines.append(
+                        f"WARNING: could not rewrite references in {len(failed)} "
+                        f"file(s), links may be broken: {names}"
+                    )
+                skipped = result.get("skipped_alias_referrers", [])
+                if skipped:
+                    lines.append(
+                        f"{len(skipped)} file(s) reference this via an alias and were "
+                        f"left as-is (the alias still resolves): {', '.join(skipped)}"
+                    )
             return "\n".join(lines)
         except (FileNotFoundError, FileExistsError, ValueError) as e:
             return f"Error: {e}"
@@ -321,13 +364,16 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
         except Exception as e:
             return f"Error deleting note: {e}"
 
-    _reg("delete_note", "Delete a note. Moves to .trash by default; use permanent for hard delete.", delete_note)
+    _reg("delete_note", "Delete a note. Moves to .trash by default (restore or empty trashed notes from within Obsidian or the filesystem — no tool lists/restores .trash); set permanent=true for an irreversible hard delete.", delete_note)
 
     # ── daily ─────────────────────────────────────────────────────────────
     def get_daily_note(date: str | None = None):
         """Read today's (or a date's) daily note."""
         from some_vault_some_mcp.tools.daily import get_daily_note as _get_daily
-        result = _get_daily(vault_path, date)
+        try:
+            result = _get_daily(vault_path, date)
+        except ValueError as e:
+            return f"Error: {e}"
         if result is None:
             target = date or "today"
             return f"Daily note not found for {target}."
@@ -464,6 +510,7 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
     def get_graph_neighbors(path: str, depth: int = 1, direction: str = "both"):
         """BFS traversal of the wikilink graph."""
         from some_vault_some_mcp.tools.links import get_graph_neighbors as _neighbors
+        depth = max(1, min(depth, 5))  # advertised range is 1–5
         try:
             results = _neighbors(vault_path, path, depth, direction)
         except FileNotFoundError:
@@ -501,18 +548,26 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
 
     _reg("vault_index_status", "Check search index health and statistics.", vault_index_status)
 
-    async def vault_reindex(path: str | None = None):
-        """Trigger incremental reindex (single file or full vault)."""
+    def vault_reindex(path: str | None = None):
+        """Trigger incremental reindex (single file or full vault).
+
+        Sync def on purpose: the body is entirely blocking (embedding can take
+        minutes), so FastMCP runs it in a threadpool instead of on the event
+        loop — otherwise a reindex freezes every other client's requests.
+        """
         if gate is not None and not gate.is_ready:
-            if gate.error:
-                return (
-                    f"vault_reindex is unavailable: initial indexing failed.\n"
-                    f"Error: {gate.error}\n"
-                    f"Restart the server to retry."
-                )
-            return "vault_reindex is unavailable: the initial index is already being built."
+            if gate.error is None:
+                return "vault_reindex is unavailable: the initial index is already being built."
+            # Prior failure — fall through and retry, recovering on success.
         from some_vault_some_mcp.tools.index import vault_reindex as _reindex
-        result = _reindex(vault_path, db_path, provider, single_file=path)
+        try:
+            result = _reindex(vault_path, db_path, provider, single_file=path)
+        except Exception as e:
+            if gate is not None:
+                gate.set_failed(str(e))
+            return f"Reindex failed: {e}"
+        if gate is not None and not gate.is_ready:
+            gate.reset_to_ready()
         return (
             f"Reindex complete:\n"
             f"  Files indexed: {result.files_indexed}\n"
@@ -583,7 +638,10 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
             except json.JSONDecodeError:
                 return "Error: Invalid JSON in edges parameter."
         try:
-            resolved = await _create(vault_path, path, parsed_nodes, parsed_edges)
+            resolved = await _create(
+                vault_path, path, parsed_nodes, parsed_edges,
+                config.blocked_path_suffixes, config.blocked_suffix_message,
+            )
             return f"Created canvas at '{resolved}'."
         except FileExistsError as e:
             return f"Error: {e}"

@@ -250,3 +250,51 @@ async def test_delete_note_soft_collision_keeps_both(vault):
     trash = Path(vault) / ".trash"
     contents = sorted(p.read_text(encoding="utf-8") for p in trash.glob("dup*.md"))
     assert contents == ["FIRST", "SECOND"], f"trash lost a copy: {contents}"
+
+
+@pytest.mark.asyncio
+async def test_prepend_preserves_frontmatter_block(vault):
+    from some_vault_some_mcp.tools.write import prepend_to_note
+    full = Path(vault) / "cm.md"
+    full.write_text("---\ntitle: T\n# keepcomment\n---\nOriginal body.", encoding="utf-8")
+    await prepend_to_note(vault, "cm.md", "INSERTED")
+    text = full.read_text()
+    assert "# keepcomment" in text                       # comment survived prepend
+    assert text.index("INSERTED") < text.index("Original body.")
+
+
+@pytest.mark.asyncio
+async def test_create_note_blocked_suffix_rejected(vault):
+    from some_vault_some_mcp.tools.write import create_note
+    with pytest.raises(ValueError):
+        await create_note(vault, "x.backup", "data",
+                          blocked_suffixes=[".backup"], blocked_message="nope")
+    assert not (Path(vault) / "x.backup").exists()
+
+
+@pytest.mark.asyncio
+async def test_move_note_rewrites_all_referrer_forms(tmp_path):
+    from some_vault_some_mcp.tools.write import create_note, move_note
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "Archive" / "Projects").mkdir(parents=True)
+    (vault / "Archive" / "Projects" / "Note.md").write_text(
+        "---\naliases: [mynickname]\n---\n## Section\nHi", encoding="utf-8")
+    (vault / "ref_exact.md").write_text("[[Archive/Projects/Note]] and [[Note]]", encoding="utf-8")
+    (vault / "ref_suffix.md").write_text("see [[Projects/Note]]", encoding="utf-8")
+    (vault / "ref_heading.md").write_text("go [[Note#Section]]", encoding="utf-8")
+    (vault / "ref_embed.md").write_text("![[Note]]", encoding="utf-8")
+    (vault / "ref_alias.md").write_text("[[mynickname]]", encoding="utf-8")
+
+    result = await move_note(str(vault), "Archive/Projects/Note.md", "Moved/Renamed.md")
+
+    def read(n): return (vault / n).read_text()
+    assert read("ref_exact.md") == "[[Moved/Renamed]] and [[Moved/Renamed]]"
+    assert read("ref_suffix.md") == "see [[Moved/Renamed]]"
+    assert read("ref_heading.md") == "go [[Moved/Renamed#Section]]"
+    assert read("ref_embed.md") == "![[Moved/Renamed]]"
+    assert read("ref_alias.md") == "[[mynickname]]"          # alias untouched
+    assert "ref_alias.md" in result["skipped_alias_referrers"]
+    assert result["failed_referrers"] == []
+    assert set(result["updated_referrers"]) == {
+        "ref_exact.md", "ref_suffix.md", "ref_heading.md", "ref_embed.md"}

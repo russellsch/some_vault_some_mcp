@@ -24,29 +24,11 @@ def extract_wikilinks(content: str) -> list[dict]:
     Skips links inside fenced code blocks and inline code.
     source is left empty — caller fills in.
     """
+    from some_vault_some_mcp.core.markdown import iter_lines_with_fence_state
     links = []
-    in_fence = False
-    fence_char = ""
-    fence_len = 0
 
-    for line in content.split("\n"):
-        stripped = line.lstrip()
-        if in_fence:
-            close_re = re.compile(rf"^{re.escape(fence_char)}{{{fence_len},}}\s*$")
-            if close_re.match(stripped):
-                in_fence = False
-            continue
-        bm = re.match(r"^(`{3,})", stripped)
-        tm = re.match(r"^(~{3,})", stripped)
-        if bm:
-            in_fence = True
-            fence_char = "`"
-            fence_len = len(bm.group(1))
-            continue
-        if tm:
-            in_fence = True
-            fence_char = "~"
-            fence_len = len(tm.group(1))
+    for line, in_code in iter_lines_with_fence_state(content):
+        if in_code:
             continue
 
         # Strip inline code spans

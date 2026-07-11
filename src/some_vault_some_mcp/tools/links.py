@@ -1,6 +1,7 @@
 """Link/graph tools: backlinks, outlinks, orphans, broken links, graph neighbors."""
 
 import logging
+from collections import deque
 from pathlib import Path
 
 from some_vault_some_mcp.core.frontmatter import extract_aliases
@@ -11,15 +12,9 @@ logger = logging.getLogger(__name__)
 
 
 def _load_vault(vault_path: str) -> tuple[list[str], dict[str, str]]:
-    """Load all notes and their content."""
-    all_notes = walk_vault(vault_path)
-    contents: dict[str, str] = {}
-    for rel in all_notes:
-        try:
-            contents[rel] = (Path(vault_path) / rel).read_text(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
-    return all_notes, contents
+    """Load all notes and their content (mtime-cached — see core.vault_cache)."""
+    from some_vault_some_mcp.core.vault_cache import read_all
+    return read_all(vault_path)
 
 
 def _build_alias_map(all_notes: list[str], contents: dict[str, str]) -> dict[str, str]:
@@ -238,10 +233,10 @@ def get_graph_neighbors(
 
     # BFS
     visited: dict[str, dict] = {start: {"path": start, "depth": 0, "direction": "both"}}
-    queue = [(start, 0)]
+    queue = deque([(start, 0)])
 
     while queue:
-        current, cur_depth = queue.pop(0)
+        current, cur_depth = queue.popleft()
         if cur_depth >= depth:
             continue
         neighbors = []

@@ -173,3 +173,13 @@ def test_fastembed_embed_and_query_both_produce_vectors(fastembed_provider):
 
 def test_fastembed_empty_input(fastembed_provider):
     assert fastembed_provider.embed_texts([]) == []
+
+
+def test_fastembed_dimensions_via_registry_no_download(monkeypatch):
+    """Dimensions come from fastembed's static registry — no model instantiation
+    at construction (plan Phase 4 / O12/F12)."""
+    monkeypatch.delenv("FASTEMBED_DIMENSIONS", raising=False)
+    from some_vault_some_mcp.core.embeddings import FastEmbedProvider
+    p = FastEmbedProvider()
+    assert p.dimensions == 768
+    assert p._embedding is None  # lazy — registry lookup did not build the model

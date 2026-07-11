@@ -29,6 +29,6 @@ ENV MCP_TRANSPORT=sse \
 EXPOSE 3789
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import socket; s=socket.create_connection(('localhost',3789),timeout=5); s.close()"
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:3789/', timeout=5)"
 
 ENTRYPOINT ["some-vault-some-mcp", "serve"]

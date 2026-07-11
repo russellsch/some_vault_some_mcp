@@ -218,3 +218,17 @@ def test_text_to_embed_bounded():
             assert len(c["text_to_embed"]) <= TARGET_CHUNK_SIZE, (
                 f"text_to_embed is {len(c['text_to_embed'])} chars for input size {size}"
             )
+
+
+def test_strip_html_preserves_generics_in_fenced_code():
+    """`List<int>` inside a code fence must survive (F17) — the HTML stripper
+    used to eat `<int>`, making code unsearchable."""
+    content = (
+        "---\ntitle: Code\n---\n\n"
+        "Prose with <b>bold</b> tag.\n\n"
+        "```rust\nlet v: List<int> = default();\n```\n"
+    )
+    chunks = chunk_markdown("code.md", content)
+    joined = "\n".join(c["content"] for c in chunks)
+    assert "List<int>" in joined          # generics in code preserved
+    assert "<b>" not in joined            # real HTML outside code still stripped

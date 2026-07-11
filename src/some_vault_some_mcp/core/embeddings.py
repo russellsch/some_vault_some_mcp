@@ -65,9 +65,15 @@ class OllamaProvider:
         try:
             response = client.embed(model=self.model, input=prefixed)
             embs = response.get("embeddings") or response.get("embedding") or []
-            if isinstance(embs[0], list):
-                return embs
-            return [embs]
+            if embs and not isinstance(embs[0], list):
+                embs = [embs]
+            # Enforce the positional-alignment contract — a short/miscounted batch
+            # would otherwise be silently truncated by zip() in the indexer.
+            if len(embs) != len(prefixed) or not all(isinstance(e, list) for e in embs):
+                raise ValueError(
+                    f"Ollama returned {len(embs)} embeddings for {len(prefixed)} inputs"
+                )
+            return embs
         except Exception as e:
             logger.warning(f"Batch embed_texts failed: {e}. Embedding individually.")
             results: list[list[float] | None] = []
@@ -172,8 +178,20 @@ class FastEmbedProvider:
         if dims_env:
             self.dimensions = int(dims_env)
         else:
-            test = list(self._client().embed(["_"]))[0]
-            self.dimensions = len(test)
+            self.dimensions = self._resolve_dimensions()
+
+    def _resolve_dimensions(self) -> int:
+        """Dimension from fastembed's static model registry — avoids downloading
+        and instantiating the model at construction just to measure its width.
+        Falls back to a one-off probe (via the lazy client) for unknown models."""
+        try:
+            from fastembed import TextEmbedding
+            for m in TextEmbedding.list_supported_models():
+                if m.get("model") == self.model and m.get("dim"):
+                    return int(m["dim"])
+        except Exception:
+            pass
+        return len(list(self._client().embed(["_"]))[0])
 
     def _client(self):
         if self._embedding is None:

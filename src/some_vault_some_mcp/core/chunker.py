@@ -260,6 +260,8 @@ def chunk_markdown(file_path: str, content: str, file_mtime: float | None = None
     for key in ("date created", "dateCreated", "date", "created"):
         val = metadata_raw.get(key)
         if val:
+            if isinstance(val, list):  # list-valued date field → take first entry
+                val = val[0] if val else ""
             date_str = str(val).split(",")[0].split("T")[0].strip()
             break
     if not date_str and file_mtime:
@@ -269,7 +271,13 @@ def chunk_markdown(file_path: str, content: str, file_mtime: float | None = None
     if not body.strip():
         return []
 
-    body = strip_html(body)
+    # Strip HTML only outside fenced code — otherwise `List<int>` and other
+    # `<word` sequences in code get eaten and become unsearchable (F17).
+    from some_vault_some_mcp.core.markdown import iter_lines_with_fence_state
+    body = "\n".join(
+        line if in_code else strip_html(line)
+        for line, in_code in iter_lines_with_fence_state(body)
+    )
     sections = _split_by_headings(body)
     chunks: list[dict] = []
 

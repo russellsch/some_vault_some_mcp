@@ -47,3 +47,14 @@ async def test_atomic_write_basic(tmp_path):
     target = str(tmp_path / "basic.md")
     await atomic_write(target, "hello world")
     assert Path(target).read_text(encoding="utf-8") == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_atomic_create_is_exclusive(tmp_path):
+    from some_vault_some_mcp.core.atomic_write import atomic_create
+    target = str(tmp_path / "a.txt")
+    await atomic_create(target, "first")
+    assert Path(target).read_text() == "first"
+    with pytest.raises(FileExistsError):
+        await atomic_create(target, "second")
+    assert Path(target).read_text() == "first"  # existing content not clobbered

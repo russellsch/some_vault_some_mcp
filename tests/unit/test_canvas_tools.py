@@ -376,3 +376,19 @@ async def test_path_traversal_rejected(vault):
 def test_read_canvas_path_traversal(vault):
     result = read_canvas(vault, "../../../etc/passwd")
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_create_canvas_blocked_suffix_rejected(vault):
+    with pytest.raises(ValueError):
+        await create_canvas(vault, "evil.backup", blocked_suffixes=[".backup"],
+                            blocked_message="blocked")
+    assert not (Path(vault) / "evil.backup.canvas").exists()
+
+
+@pytest.mark.asyncio
+async def test_create_canvas_exclusive_no_clobber(vault):
+    await create_canvas(vault, "dup", nodes=[{"type": "text", "text": "one"}])
+    with pytest.raises(FileExistsError):
+        await create_canvas(vault, "dup", nodes=[{"type": "text", "text": "two"}])
+    assert "one" in (Path(vault) / "dup.canvas").read_text()
