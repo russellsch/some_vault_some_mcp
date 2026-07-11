@@ -2201,7 +2201,7 @@ wheels = [
 
 [[package]]
 name = "some-vault-some-mcp"
-version = "0.0.12"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastembed" },
