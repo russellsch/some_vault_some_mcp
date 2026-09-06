@@ -12,6 +12,7 @@ Boot sequence (§6.4):
 
 import argparse
 import hmac
+import ipaddress
 import logging
 import os
 import sys
@@ -22,6 +23,19 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+
+
+def _validate_sse_security(config) -> None:
+    """Refuse to expose the SSE transport publicly without authentication."""
+    try:
+        loopback = ipaddress.ip_address(config.host).is_loopback
+    except ValueError:
+        loopback = config.host.lower().rstrip(".") == "localhost"
+    if config.transport == "sse" and not loopback and not config.api_key:
+        raise ValueError(
+            f"Refusing to bind unauthenticated SSE server to {config.host}:{config.port}. "
+            "Set VAULT_API_KEY or bind to 127.0.0.1."
+        )
 
 
 def _wait_for_ollama(url: str, timeout: int = 60) -> bool:
@@ -45,7 +59,7 @@ def serve(args) -> None:
     from some_vault_some_mcp.core.embeddings import get_provider
     from some_vault_some_mcp.core.indexer import (
         _check_dimension_mismatch, _get_db, _get_table, check_and_maybe_migrate,
-        full_index, incremental_index, TABLE_NAME,
+        full_index, incremental_index,
     )
     from some_vault_some_mcp.core.watcher import start_watcher
     from some_vault_some_mcp.server import build_server
@@ -59,6 +73,12 @@ def serve(args) -> None:
         config.host = args.host
     if args.port:
         config.port = args.port
+
+    try:
+        _validate_sse_security(config)
+    except ValueError as e:
+        logger.error(str(e))
+        sys.exit(1)
 
     if not config.vault_path:
         logger.error("VAULT_PATH is not set — exiting")
@@ -138,14 +158,6 @@ def serve(args) -> None:
         mcp.run(transport="stdio")
     else:
         import uvicorn
-
-        loopback = config.host in ("127.0.0.1", "::1", "localhost")
-        if not config.api_key and not loopback:
-            logger.warning(
-                f"Binding {config.host}:{config.port} with NO VAULT_API_KEY set — "
-                "the vault is exposed to the network without authentication. Set "
-                "VAULT_API_KEY, or bind 127.0.0.1."
-            )
 
         sse_app = mcp.http_app(transport="sse")
         if config.api_key:
