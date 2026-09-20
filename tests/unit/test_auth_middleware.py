@@ -2,8 +2,8 @@
 
 import pytest
 
-from some_vault_some_mcp.cli import _APIKeyMiddleware
-from some_vault_some_mcp.config import load_config
+from some_vault_some_mcp.cli import _APIKeyMiddleware, _validate_sse_security
+from some_vault_some_mcp.config import VaultMcpConfig, load_config
 
 
 KEY = "s3cret"
@@ -83,3 +83,23 @@ def test_default_host_is_loopback(monkeypatch):
     for var in ("MCP_HOST", "VAULT_API_KEY", "some_vault_some_mcp_OVERRIDES"):
         monkeypatch.delenv(var, raising=False)
     assert load_config().host == "127.0.0.1"
+
+
+def test_public_sse_requires_api_key():
+    config = VaultMcpConfig(transport="sse", host="0.0.0.0", api_key="")
+    with pytest.raises(ValueError, match="Refusing to bind unauthenticated SSE"):
+        _validate_sse_security(config)
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        VaultMcpConfig(transport="sse", host="0.0.0.0", api_key=KEY),
+        VaultMcpConfig(transport="sse", host="127.0.0.1", api_key=""),
+        VaultMcpConfig(transport="sse", host="127.0.0.2", api_key=""),
+        VaultMcpConfig(transport="sse", host="::1", api_key=""),
+        VaultMcpConfig(transport="stdio", host="0.0.0.0", api_key=""),
+    ],
+)
+def test_secure_or_non_network_config_is_allowed(config):
+    _validate_sse_security(config)

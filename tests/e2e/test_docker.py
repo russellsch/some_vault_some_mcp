@@ -18,6 +18,7 @@ pytestmark = pytest.mark.e2e
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 TEST_VAULT = Path(__file__).parent.parent / "fixtures" / "vault"
+TEST_API_KEY = "e2e-only-api-key"
 
 
 def _poll_health(url: str, timeout: int = 60) -> bool:
@@ -44,6 +45,7 @@ def _start_container(image, vault_host_path: str, mode: str = "ro"):
         .with_env("MCP_TRANSPORT", "sse")
         .with_env("MCP_HOST", "0.0.0.0")
         .with_env("MCP_PORT", "3789")
+        .with_env("VAULT_API_KEY", TEST_API_KEY)
         .with_volume_mapping(vault_host_path, "/opt/vault", mode)
         .with_exposed_ports(3789)
     )
@@ -105,7 +107,10 @@ async def _mcp_call(url: str, tool: str, args: dict | None = None) -> str:
     from mcp.client.session import ClientSession
     from mcp.client.sse import sse_client
 
-    async with sse_client(url=f"{url}/sse") as (read, write):
+    async with sse_client(
+        url=f"{url}/sse",
+        headers={"Authorization": f"Bearer {TEST_API_KEY}"},
+    ) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             result = await session.call_tool(tool, arguments=args or {})

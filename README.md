@@ -100,7 +100,7 @@ CLI flags override env vars.
 | `VAULT_PATH` | (required) | Absolute path to Obsidian vault |
 | `LANCE_DB_PATH` | `./data/vault.lance` | Where the vector index lives |
 | `MCP_TRANSPORT` | `sse` | `sse` or `stdio` |
-| `MCP_HOST` | `127.0.0.1` | SSE bind address. Defaults to loopback — set `0.0.0.0` to expose on the network (the Docker image does this explicitly). Binding non-loopback without `VAULT_API_KEY` logs a warning. |
+| `MCP_HOST` | `127.0.0.1` | SSE bind address. Defaults to loopback — set `0.0.0.0` to expose on the network (the Docker image does this explicitly). A non-loopback bind requires `VAULT_API_KEY`. |
 | `MCP_PORT` | `3789` | SSE port |
 | `EMBEDDING_PROVIDER` | `fastembed` | `fastembed`, `ollama`, `openai`, or `mock` |
 | `FASTEMBED_MODEL` | `nomic-ai/nomic-embed-text-v1.5-Q` | Any fastembed-supported model. On Apple Silicon, auto-detects and uses the non-quantized variant (`v1.5` instead of `v1.5-Q`) since the quantized ONNX ops are x86-optimized |
@@ -117,7 +117,9 @@ CLI flags override env vars.
 ```bash
 docker build -t some-vault-some-mcp .
 
+export VAULT_API_KEY="$(openssl rand -hex 32)"
 docker run -p 3789:3789 \
+  -e VAULT_API_KEY \
   -v /path/to/vault:/opt/vault:ro \
   -v /data:/opt/data \
   some-vault-some-mcp
