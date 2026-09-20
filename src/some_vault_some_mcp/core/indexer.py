@@ -6,7 +6,8 @@ Schema is preserved exactly (see docs/plans/lancedb-schema-capture.md):
 - tags/projects stored as comma-separated strings (not Arrow lists)
 
 Improvements:
-- SKIP_DIRS reduced to .obsidian, .git, .trash (vault-specific dirs removed)
+- Excluded folders come from paths.is_index_excluded (EXCLUDED_DIRS, any
+  dot-directory, and the configured extra list)
 - rglob("*.md") only — no SKIP_EXTENSIONS needed
 - Dimension check at startup (§6.4 step 3)
 - Single-file reindex actually limits scope (upstream bug fixed)
@@ -23,7 +24,6 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 TABLE_NAME = "vault_chunks"
-EXCLUDED_DIRS = frozenset([".obsidian", ".git", ".trash"])
 BATCH_SIZE = 50
 
 # Bump when the *stored* record format changes (not query-time behaviour), so
@@ -149,14 +149,13 @@ def scan_vault(vault_path: str) -> list[tuple[str, float]]:
     Skips excluded dirs and any file whose real path escapes the vault, so a
     symlink pointing outside the vault is never indexed (out-of-vault content
     must not enter the index / model context)."""
-    from some_vault_some_mcp.core.paths import _within_vault
+    from some_vault_some_mcp.core.paths import _within_vault, is_index_excluded
     vault = Path(vault_path)
     vault_root = vault.resolve()
     results = []
     for path in vault.rglob("*.md"):
         rel = str(path.relative_to(vault)).replace("\\", "/")
-        parts = rel.split("/")
-        if any(seg.lower() in EXCLUDED_DIRS for seg in parts):
+        if is_index_excluded(rel):
             continue
         if not _within_vault(path, vault_root):
             continue
@@ -250,6 +249,30 @@ def full_index(
     }
 
 
+def _delete_paths(table, paths: set[str]) -> set[str]:
+    """Delete every chunk whose file_path is in `paths`. Returns the paths whose
+    delete failed. Tries one batched delete first, then one delete per path.
+    The fallback covers a transient fault; a path that cannot be expressed as a
+    filter fails in both attempts and is returned."""
+    from some_vault_some_mcp.core.filters import escape_string
+    if not paths:
+        return set()
+    filter_expr = " OR ".join(f"file_path = '{escape_string(p)}'" for p in paths)
+    try:
+        table.delete(filter_expr)
+        return set()
+    except Exception as e:
+        logger.warning(f"Batched delete of {len(paths)} paths failed ({e}); retrying per path")
+    failed: set[str] = set()
+    for p in paths:
+        try:
+            table.delete(f"file_path = '{escape_string(p)}'")
+        except Exception as e:
+            logger.warning(f"Delete failed for {p}: {e}")
+            failed.add(p)
+    return failed
+
+
 def incremental_index(
     vault_path: str,
     db_path: str,
@@ -304,26 +327,36 @@ def incremental_index(
                 "duration_seconds": round(time.time() - start, 2),
             }
 
-        # Remove old chunks for reindexed/deleted files
-        paths_to_remove = {p for p, _ in to_reindex} | deleted
-        if paths_to_remove:
-            from some_vault_some_mcp.core.filters import escape_string
-            filter_expr = " OR ".join(f'file_path = "{escape_string(p)}"' for p in paths_to_remove)
-            table.delete(filter_expr)
-
+        # Read and chunk first, one file at a time. A file that fails here is
+        # skipped and keeps its old chunks; it is retried on the next run.
         vault = Path(vault_path)
         new_chunks: list[dict] = []
+        chunked_ok: set[str] = set()
+        skipped: set[str] = set()
         for rel_path, mtime in to_reindex:
             full_path = vault / rel_path
             try:
                 content = full_path.read_text(encoding="utf-8", errors="replace")
+                chunks = chunk_markdown(rel_path, content, file_mtime=mtime)
             except Exception as e:
-                logger.warning(f"Could not read {rel_path}: {e}")
+                logger.warning(f"Skipping {rel_path}: {e}")
+                skipped.add(rel_path)
                 continue
-            chunks = chunk_markdown(rel_path, content, file_mtime=mtime)
             for chunk in chunks:
                 chunk["file_mtime"] = mtime
             new_chunks.extend(chunks)
+            chunked_ok.add(rel_path)
+
+        # Remove old chunks for reindexed/deleted files. One batched delete;
+        # if it fails, fall back to one delete per path so one bad path cannot
+        # block the rest. A path whose delete still fails is not re-added, so
+        # no duplicate chunks are written.
+        paths_to_remove = chunked_ok | deleted
+        failed_delete = _delete_paths(table, paths_to_remove)
+        if failed_delete:
+            logger.error(f"Could not delete old chunks for {sorted(failed_delete)}; "
+                         "their new chunks are not added this run")
+            new_chunks = [c for c in new_chunks if c["file_path"] not in failed_delete]
 
         records: list[dict] = []
         if new_chunks:
@@ -340,9 +373,10 @@ def incremental_index(
 
         duration = time.time() - start
         return {
-            "files_indexed": len(to_reindex),
+            "files_indexed": len(chunked_ok - failed_delete),
             "chunks_created": len(records),
-            "files_removed": len(deleted),
+            "files_removed": len(deleted - failed_delete),
+            "files_skipped": len(skipped) + len(failed_delete),
             "duration_seconds": round(duration, 2),
         }
 

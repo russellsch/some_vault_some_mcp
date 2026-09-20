@@ -28,6 +28,36 @@ jobs:
       - name: Run tests
         run: uv run pytest -v
 
+  # The locked LanceDB (0.30.x) accepts double-quoted SQL literals through a
+  # legacy fallback; newer releases inside the pin reject them. Run the
+  # filter-dependent tests against the newest allowed release too.
+  test-lancedb-latest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies with newest allowed LanceDB
+        run: |
+          uv sync --frozen
+          uv pip install --upgrade "lancedb<0.40"
+          uv run python -c "import lancedb; print('lancedb', lancedb.__version__)"
+
+      - name: Run filter-dependent tests
+        run: >
+          uv run --no-sync pytest -v
+          tests/unit/test_filters.py
+          tests/integration/test_hostile_filenames.py
+          tests/integration/test_indexer.py
+          tests/integration/test_list_notes_filter.py
+          tests/integration/test_search_correctness.py
+
   check:
     runs-on: ubuntu-latest
     steps:

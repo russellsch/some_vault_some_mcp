@@ -52,6 +52,10 @@ def serve(args) -> None:
 
     config = load_config()
 
+    # Folders hidden from the index and from listings (see paths.is_index_excluded).
+    from some_vault_some_mcp.core.paths import configure_excluded_dirs
+    configure_excluded_dirs(config.excluded_dirs)
+
     # CLI args override env
     if args.transport:
         config.transport = args.transport

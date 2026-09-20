@@ -9,13 +9,64 @@ before any filesystem operation. The resolver:
 
 Internal server code that needs to read .obsidian/ (e.g. daily-notes.json)
 calls resolve_internal() which skips the excluded-dir check.
+
+Two exclusion rules live here and they differ on purpose:
+- The MCP boundary (`_check_excluded`) denies only the three names in
+  EXCLUDED_DIRS. A tool call with an exact path into any other folder works.
+- Index exclusion (`is_index_excluded`) is wider: it also skips any directory
+  segment that starts with "." and any folder name set by
+  `configure_excluded_dirs`. It drives the index scan, the watcher and the
+  vault walkers, so those folders are hidden from search, listings, backlinks
+  and link rewrites, but not denied.
 """
 
 import os
+from collections.abc import Iterable
 from pathlib import Path
 
 
 EXCLUDED_DIRS = frozenset([".obsidian", ".git", ".trash"])
+
+# Extra folder names hidden from the index (see configure_excluded_dirs). Read
+# this at call time via the module attribute; never `from paths import` it,
+# because configure_excluded_dirs rebinds the name.
+_extra_excluded: frozenset[str] = frozenset()
+
+
+def configure_excluded_dirs(names: Iterable[str]) -> None:
+    """Set the extra folder names that `is_index_excluded` hides.
+
+    Names are stripped and lowercased; empties are dropped. Rebinds the module
+    global atomically, so no lock is needed. Call it before any index thread
+    starts.
+    """
+    global _extra_excluded
+    _extra_excluded = frozenset(
+        str(n).strip().lower() for n in names if n and str(n).strip()
+    )
+
+
+def is_index_excluded(rel: str) -> bool:
+    """True if a vault-relative path is hidden from the index and the walkers.
+
+    A path is excluded when any directory segment (every segment except the
+    file name) starts with ".", or when any segment's lowercase name is in
+    EXCLUDED_DIRS or in the configured extra set. Matching is by segment name
+    at any depth, so "external" also hides "projects/external/". A dot-file
+    such as "notes/.draft.md" is not excluded by the dot rule.
+
+    Excluded folders are hidden, not denied: `resolve_vault_path` still
+    permits an exact path into them.
+    """
+    parts = rel.replace("\\", "/").split("/")
+    for seg in parts[:-1]:
+        if seg.startswith("."):
+            return True
+    for seg in parts:
+        low = seg.lower()
+        if low in EXCLUDED_DIRS or low in _extra_excluded:
+            return True
+    return False
 
 
 class VaultPathError(Exception):
@@ -23,7 +74,11 @@ class VaultPathError(Exception):
 
 
 def _check_excluded(rel: str) -> None:
-    """Raise VaultPathError if any segment of rel is an excluded dir."""
+    """Raise VaultPathError if any segment of rel is an excluded dir.
+
+    This is the MCP boundary. It checks only EXCLUDED_DIRS, not the wider
+    index rule in `is_index_excluded`.
+    """
     parts = rel.replace("\\", "/").split("/")
     for seg in parts:
         if seg.lower() in EXCLUDED_DIRS:
@@ -98,15 +153,15 @@ def _within_vault(path: Path, vault_root: Path) -> bool:
 
 
 def walk_vault(vault_path: str) -> list[str]:
-    """Return vault-relative paths of all .md files, excluding EXCLUDED_DIRS and
-    any file whose real path escapes the vault (symlink boundary)."""
+    """Return vault-relative paths of all .md files, excluding index-excluded
+    folders (see is_index_excluded) and any file whose real path escapes the
+    vault (symlink boundary)."""
     vault = Path(vault_path)
     vault_root = vault.resolve()
     results: list[str] = []
     for path in vault.rglob("*.md"):
         rel = str(path.relative_to(vault)).replace("\\", "/")
-        parts = rel.split("/")
-        if any(seg.lower() in EXCLUDED_DIRS for seg in parts):
+        if is_index_excluded(rel):
             continue
         if not _within_vault(path, vault_root):
             continue
@@ -176,15 +231,15 @@ def ensure_canvas_extension(path: str) -> str:
 
 
 def walk_canvas(vault_path: str) -> list[str]:
-    """Return vault-relative paths of all .canvas files, excluding EXCLUDED_DIRS
-    and any file whose real path escapes the vault (symlink boundary)."""
+    """Return vault-relative paths of all .canvas files, excluding
+    index-excluded folders (see is_index_excluded) and any file whose real path
+    escapes the vault (symlink boundary)."""
     vault = Path(vault_path)
     vault_root = vault.resolve()
     results: list[str] = []
     for path in vault.rglob("*.canvas"):
         rel = str(path.relative_to(vault)).replace("\\", "/")
-        parts = rel.split("/")
-        if any(seg.lower() in EXCLUDED_DIRS for seg in parts):
+        if is_index_excluded(rel):
             continue
         if not _within_vault(path, vault_root):
             continue

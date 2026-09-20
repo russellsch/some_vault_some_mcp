@@ -43,6 +43,8 @@ class VaultMcpConfig:
     disabled_tools: set[str] = field(default_factory=set)
     blocked_path_suffixes: list[str] = field(default_factory=list)
     blocked_suffix_message: str = ""
+    # Folder names (any depth) hidden from the index and from listings.
+    excluded_dirs: list[str] = field(default_factory=list)
 
 
 def load_overrides(
@@ -56,6 +58,7 @@ def load_overrides(
     path_validation_dict keys:
       blocked_suffixes: list[str]
       message: str
+      excluded_dirs: list[str]
     """
     path = (
         override_path
@@ -94,9 +97,17 @@ def load_overrides(
     path_validation = {
         "blocked_suffixes": [str(s) for s in (pv.get("blocked_suffixes") or []) if s],
         "message": str(pv.get("message") or ""),
+        "excluded_dirs": _normalize_dir_names(data.get("excluded_dirs") or []),
     }
 
     return overrides, disabled, path_validation
+
+
+def _normalize_dir_names(raw) -> list[str]:
+    """Strip, lowercase and drop empty folder names. Accepts a list or a
+    comma-separated string."""
+    items = raw.split(",") if isinstance(raw, str) else list(raw)
+    return [str(s).strip().lower() for s in items if s and str(s).strip()]
 
 
 def load_config() -> VaultMcpConfig:
@@ -120,6 +131,9 @@ def load_config() -> VaultMcpConfig:
     blocked_message = path_validation.get("message") or os.getenv(
         "VAULT_BLOCKED_SUFFIX_MESSAGE", ""
     )
+    excluded_dirs = path_validation.get("excluded_dirs") or _normalize_dir_names(
+        os.getenv("VAULT_EXCLUDED_DIRS", "")
+    )
 
     return VaultMcpConfig(
         vault_path=os.getenv("VAULT_PATH", ""),
@@ -135,6 +149,7 @@ def load_config() -> VaultMcpConfig:
         disabled_tools=disabled,
         blocked_path_suffixes=blocked,
         blocked_suffix_message=blocked_message,
+        excluded_dirs=excluded_dirs,
     )
 
 

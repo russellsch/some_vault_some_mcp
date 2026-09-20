@@ -25,7 +25,7 @@ def test_empty_file_returns_empty():
     overrides, disabled, path_val = load_overrides(path)
     assert overrides == {}
     assert disabled == set()
-    assert path_val == {"blocked_suffixes": [], "message": ""}
+    assert path_val == {"blocked_suffixes": [], "message": "", "excluded_dirs": []}
 
 
 def test_missing_file_returns_empty():
@@ -150,3 +150,27 @@ def test_vault_mcp_overrides_env_preferred(monkeypatch, tmp_path):
     monkeypatch.delenv("some_vault_some_mcp_OVERRIDES", raising=False)
     _, disabled, _ = load_overrides()
     assert "search" in disabled
+
+
+def test_excluded_dirs_from_env(monkeypatch):
+    from some_vault_some_mcp.config import load_config
+    monkeypatch.delenv("VAULT_MCP_OVERRIDES", raising=False)
+    monkeypatch.delenv("some_vault_some_mcp_OVERRIDES", raising=False)
+    monkeypatch.setenv("VAULT_EXCLUDED_DIRS", "external, Archive,,")
+    assert load_config().excluded_dirs == ["external", "archive"]
+
+
+def test_excluded_dirs_default_empty(monkeypatch):
+    from some_vault_some_mcp.config import load_config
+    monkeypatch.delenv("VAULT_MCP_OVERRIDES", raising=False)
+    monkeypatch.delenv("some_vault_some_mcp_OVERRIDES", raising=False)
+    monkeypatch.delenv("VAULT_EXCLUDED_DIRS", raising=False)
+    assert load_config().excluded_dirs == []
+
+
+def test_excluded_dirs_yaml_wins_over_env(monkeypatch):
+    from some_vault_some_mcp.config import load_config
+    path = _write_override_file({"excluded_dirs": ["Vendored", "  "]})
+    monkeypatch.setenv("VAULT_MCP_OVERRIDES", path)
+    monkeypatch.setenv("VAULT_EXCLUDED_DIRS", "external")
+    assert load_config().excluded_dirs == ["vendored"]

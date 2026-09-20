@@ -11,7 +11,8 @@ import threading
 import time
 from pathlib import Path
 
-from some_vault_some_mcp.core.indexer import EXCLUDED_DIRS, incremental_index
+from some_vault_some_mcp.core.indexer import incremental_index
+from some_vault_some_mcp.core.paths import is_index_excluded
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class _VaultEventHandler:
             return
         # Drop excluded-dir events at the door (e.g. the .trash events every
         # soft-delete emits) so they don't trigger a scan + reindex to no-op.
-        if any(seg.lower() in EXCLUDED_DIRS for seg in rel.split("/")):
+        if is_index_excluded(rel):
             return
         with self._lock:
             self._pending.add(rel)

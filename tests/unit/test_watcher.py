@@ -104,12 +104,16 @@ def test_excluded_dir_events_dropped(tmp_path):
         call_log.append(kwargs.get("only_files"))
         return {"files_indexed": 0, "chunks_created": 0, "files_removed": 0, "duration_seconds": 0.0}
 
+    from some_vault_some_mcp.core.paths import configure_excluded_dirs
     from some_vault_some_mcp.core.watcher import _VaultEventHandler, DEBOUNCE_SECS
 
+    configure_excluded_dirs(["external"])
     with patch("some_vault_some_mcp.core.watcher.incremental_index", fake_incremental):
         handler = _VaultEventHandler(vault_path, "fake_db", None)
         handler._on_event(str(tmp_path / "vault" / ".trash" / "gone.md"))
         handler._on_event(str(tmp_path / "vault" / ".git" / "x.md"))
+        handler._on_event(str(tmp_path / "vault" / ".claude" / "worktrees" / "w" / "n.md"))
+        handler._on_event(str(tmp_path / "vault" / "external" / "vendored.md"))
         time.sleep(DEBOUNCE_SECS + 0.5)
 
     assert call_log == []

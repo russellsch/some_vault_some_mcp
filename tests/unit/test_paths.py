@@ -9,7 +9,9 @@ import pytest
 from some_vault_some_mcp.core.paths import (
     VaultPathError,
     check_blocked_suffixes,
+    configure_excluded_dirs,
     ensure_md_extension,
+    is_index_excluded,
     resolve_note_path,
     resolve_vault_path,
     strip_md_suffix,
@@ -231,3 +233,42 @@ def test_walk_vault_excludes_symlink_escaping_vault(tmp_path):
     assert "real.md" in found
     assert "leak.md" not in found                 # symlink out of vault excluded
     assert "innervault-link.md" in found          # in-vault symlink still allowed
+
+
+def test_is_index_excluded_dot_dirs_and_builtin_names():
+    assert is_index_excluded(".claude/worktrees/x/a.md")
+    assert is_index_excluded("sub/.hidden/a.md")
+    assert is_index_excluded("sub\\.hidden\\a.md")  # Windows separators
+    assert is_index_excluded(".obsidian/plugins/a.md")
+    assert is_index_excluded("deep/.Trash/a.md")  # case-insensitive builtin name
+    assert not is_index_excluded("notes/a.md")
+    assert not is_index_excluded("notes/.draft.md")  # dot-file, not dot-dir
+    assert not is_index_excluded("a.md")
+
+
+def test_is_index_excluded_configured_names():
+    assert not is_index_excluded("external/a.md")
+    configure_excluded_dirs([" External ", "", None])
+    assert is_index_excluded("external/a.md")
+    assert is_index_excluded("projects/EXTERNAL/a.md")  # any depth, any case
+    assert not is_index_excluded("externals/a.md")  # whole segment only
+    configure_excluded_dirs(())
+    assert not is_index_excluded("external/a.md")
+
+
+def test_is_index_excluded_does_not_change_mcp_boundary(tmp_path):
+    """Configured and dot-dir exclusion hides folders from walkers but does not
+    deny an exact-path tool call (hidden, not denied)."""
+    vault = tmp_path / "vault"
+    (vault / "external").mkdir(parents=True)
+    (vault / "external" / "a.md").write_text("x", encoding="utf-8")
+    (vault / ".claude").mkdir()
+    (vault / ".claude" / "b.md").write_text("x", encoding="utf-8")
+    (vault / "kept.md").write_text("x", encoding="utf-8")
+    configure_excluded_dirs(["external"])
+
+    assert walk_vault(str(vault)) == ["kept.md"]
+    assert resolve_vault_path(str(vault), "external/a.md").endswith("external/a.md")
+    assert resolve_vault_path(str(vault), ".claude/b.md").endswith(".claude/b.md")
+    with pytest.raises(VaultPathError):
+        resolve_vault_path(str(vault), ".obsidian/app.json")

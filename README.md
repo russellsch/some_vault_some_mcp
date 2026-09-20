@@ -482,7 +482,8 @@ First matching step wins.
 ## Security boundaries
 
 - All paths validated against vault root - rejects `../`, null bytes, symlink escapes
-- `.obsidian`, `.git`, `.trash` excluded from indexing and tool access
+- `.obsidian`, `.git`, `.trash` denied at the tool boundary and excluded from indexing
+- Any folder whose name starts with `.` (for example `.claude/`) is skipped by the indexer and by note listings. Add more folder names with `VAULT_EXCLUDED_DIRS=external,archive` or with an `excluded_dirs: [external, archive]` list in the override file. These folders are hidden, not denied: search, listings, backlinks and link rewrites skip them, but a tool call with the exact path still works. `resolve_vault_path` still denies only `.obsidian`, `.git` and `.trash`.
 - Optional Bearer token auth on SSE transport
 - Docker container runs as non-root
 - Bounded frontmatter parsing prevents YAML bombs

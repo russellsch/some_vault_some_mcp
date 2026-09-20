@@ -143,9 +143,9 @@ def _list_from_index(
         if projects:
             conditions.append(f"({' OR '.join(like_token('projects', p) for p in projects)})")
         if status:
-            conditions.append(f'status = "{escape_string(status)}"')
+            conditions.append(f"status = '{escape_string(status)}'")
         if area:
-            conditions.append(f'area = "{escape_string(area)}"')
+            conditions.append(f"area = '{escape_string(area)}'")
 
         where = " AND ".join(conditions)
         df = table.search().where(where).select(["file_path"]).to_pandas()

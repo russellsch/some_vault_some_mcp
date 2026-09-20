@@ -60,9 +60,21 @@ def test_vector_dimensions(tmp_path):
 
 
 def test_excluded_dirs_not_indexed(tmp_path):
+    import shutil
+    from some_vault_some_mcp.core.paths import configure_excluded_dirs
+    vault = tmp_path / "vault"
+    shutil.copytree(str(FIXTURES), str(vault))
+    (vault / ".claude" / "worktrees" / "w").mkdir(parents=True)
+    (vault / ".claude" / "worktrees" / "w" / "note.md").write_text("# hidden", encoding="utf-8")
+    (vault / "external").mkdir()
+    (vault / "external" / "vendored.md").write_text("# vendored", encoding="utf-8")
+    (vault / "kept" / ".draft.md").parent.mkdir()
+    (vault / "kept" / ".draft.md").write_text("# Draft\n\nThis dot-file stays indexed.", encoding="utf-8")
+    configure_excluded_dirs(["External"])
+
     db_path = str(tmp_path / "vault.lance")
     provider = MockProvider()
-    full_index(str(FIXTURES), db_path, provider)
+    full_index(str(vault), db_path, provider)
     db = _get_db(db_path)
     table = _get_table(db)
     df = table.to_pandas()
@@ -71,6 +83,89 @@ def test_excluded_dirs_not_indexed(tmp_path):
         parts = p.split("/")
         for seg in parts:
             assert seg not in (".obsidian", ".git", ".trash"), f"Excluded path leaked: {p}"
+        assert not p.startswith(".claude/"), f"dot-dir leaked: {p}"
+        assert not p.startswith("external/"), f"configured dir leaked: {p}"
+    assert "kept/.draft.md" in paths
+
+
+def _copy_fixture_vault(tmp_path):
+    import shutil
+    vault = tmp_path / "vault"
+    shutil.copytree(str(FIXTURES), str(vault),
+                    ignore=shutil.ignore_patterns(".git", ".trash", ".obsidian"))
+    return vault
+
+
+def test_incremental_skips_file_that_fails_to_chunk(tmp_path, monkeypatch):
+    """A file whose chunking raises keeps its old chunks; the others reindex."""
+    import os
+    import some_vault_some_mcp.core.chunker as chunker
+    vault = _copy_fixture_vault(tmp_path)
+    db_path = str(tmp_path / "db.lance")
+    full_index(str(vault), db_path, MockProvider())
+
+    before = _get_table(_get_db(db_path)).to_pandas()
+    bad_before = len(before[before["file_path"] == "simple.md"])
+    assert bad_before > 0
+
+    for name in ("simple.md", "linked-note.md"):
+        p = vault / name
+        p.write_text(p.read_text(encoding="utf-8") + "\n\nedited", encoding="utf-8")
+        os.utime(str(p), (2_000_000_000, 2_000_000_000))
+
+    real = chunker.chunk_markdown
+
+    def boom(rel_path, content, **kw):
+        if rel_path == "simple.md":
+            raise RuntimeError("synthetic chunk failure")
+        return real(rel_path, content, **kw)
+
+    monkeypatch.setattr(chunker, "chunk_markdown", boom)
+    result = incremental_index(str(vault), db_path, MockProvider(),
+                               only_files={"simple.md", "linked-note.md"})
+
+    assert result["files_skipped"] == 1
+    assert result["files_indexed"] == 1
+    after = _get_table(_get_db(db_path)).to_pandas()
+    assert len(after[after["file_path"] == "simple.md"]) == bad_before
+    assert not after[after["file_path"] == "simple.md"]["content"].str.contains("edited").any()
+    assert after[after["file_path"] == "linked-note.md"]["content"].str.contains("edited").any()
+
+
+def test_incremental_delete_fallback_per_path(tmp_path, monkeypatch):
+    """If the batched delete fails, each path is deleted alone; no duplicates."""
+    import os
+    vault = _copy_fixture_vault(tmp_path)
+    db_path = str(tmp_path / "db.lance")
+    full_index(str(vault), db_path, MockProvider())
+
+    for name in ("simple.md", "linked-note.md"):
+        p = vault / name
+        p.write_text(p.read_text(encoding="utf-8") + "\n\nedited", encoding="utf-8")
+        os.utime(str(p), (2_000_000_000, 2_000_000_000))
+
+    import lancedb.table as lt
+    real_delete = lt.LanceTable.delete
+    calls = []
+
+    def flaky_delete(self, where):
+        calls.append(where)
+        if " OR " in where:
+            raise RuntimeError("synthetic batched delete failure")
+        return real_delete(self, where)
+
+    monkeypatch.setattr(lt.LanceTable, "delete", flaky_delete)
+    result = incremental_index(str(vault), db_path, MockProvider(),
+                               only_files={"simple.md", "linked-note.md"})
+
+    assert len(calls) == 3  # one batched attempt, then one per path
+    assert result["files_indexed"] == 2
+    assert result["files_skipped"] == 0
+    after = _get_table(_get_db(db_path)).to_pandas()
+    for name in ("simple.md", "linked-note.md"):
+        rows = after[after["file_path"] == name]
+        assert rows["content"].str.contains("edited").all(), f"stale chunks for {name}"
+        assert rows["chunk_index"].is_unique, f"duplicate chunks for {name}"
 
 
 def test_incremental_index_detects_changes(tmp_path):

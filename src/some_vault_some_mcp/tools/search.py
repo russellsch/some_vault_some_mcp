@@ -53,7 +53,8 @@ def semantic_search(
         tag_conditions = [like_token("tags", t) for t in tags]
         conditions.append(f"({' OR '.join(tag_conditions)})")
     if folder:
-        conditions.append(f'file_path LIKE "{escape_like(folder.rstrip("/") + "/")}%"')
+        prefix = escape_like(folder.rstrip("/") + "/")
+        conditions.append(f"file_path LIKE '{prefix}%'")
 
     search_q = table.search(query_vector).metric("cosine").limit(top_k)
     if conditions:
@@ -102,7 +103,8 @@ def hybrid_search(
         tag_conditions = [like_token("tags", t) for t in tags]
         conditions.append(f"({' OR '.join(tag_conditions)})")
     if folder:
-        conditions.append(f'file_path LIKE "{escape_like(folder.rstrip("/") + "/")}%"')
+        prefix = escape_like(folder.rstrip("/") + "/")
+        conditions.append(f"file_path LIKE '{prefix}%'")
     where_clause = " AND ".join(conditions) if conditions else None
 
     # Semantic pass
