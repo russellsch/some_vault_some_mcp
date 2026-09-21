@@ -62,7 +62,8 @@ def test_mismatched_dims_existing_index_untouched(tmp_path):
         pass
 
     # Table should still have original row count
-    table = db.open_table(TABLE_NAME)
+    from some_vault_some_mcp.core.indexer import _get_table
+    table = _get_table(db)
     assert table.count_rows() == initial_count
 
 

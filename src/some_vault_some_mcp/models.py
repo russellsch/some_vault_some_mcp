@@ -79,6 +79,9 @@ class IndexStatus(BaseModel):
     total_files: int
     pending_reindex: int = 0
     db_size_mb: float = 0.0
+    rebuild_in_progress: bool = False
+    last_rebuild_error: str | None = None
+    serving_degraded: bool = False
 
 
 class ReindexResult(BaseModel):
@@ -86,6 +89,7 @@ class ReindexResult(BaseModel):
     chunks_created: int
     files_removed: int
     duration_seconds: float
+    files_skipped: int = 0
 
 
 # ── Canvas models ────────────────────────────────────────────────────────

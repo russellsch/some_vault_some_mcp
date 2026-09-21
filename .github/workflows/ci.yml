@@ -10,6 +10,29 @@ permissions:
   contents: read
 
 jobs:
+  native-exclusive-move:
+    name: Native exclusive move (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen --python 3.12
+
+      - name: Run native exclusive-move tests
+        run: uv run --python 3.12 pytest -v tests/unit/test_exclusive_move.py
+
   test:
     runs-on: ubuntu-latest
     strategy:

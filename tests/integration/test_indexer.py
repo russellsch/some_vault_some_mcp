@@ -274,8 +274,8 @@ class _PartialFailProvider(MockProvider):
         return [None if i % 3 == 2 else v for i, v in enumerate(vectors)]
 
 
-def test_incremental_chunks_created_counts_successful_only(tmp_path):
-    """chunks_created should reflect records actually added, not chunks produced."""
+def test_incremental_rejects_partial_embedding_batch(tmp_path):
+    """A missing vector aborts instead of publishing a partial file."""
     import shutil
     vault = tmp_path / "vault"
     shutil.copytree(str(FIXTURES), str(vault),
@@ -289,11 +289,14 @@ def test_incremental_chunks_created_counts_successful_only(tmp_path):
     )
     (vault / "big-note.md").write_text(big, encoding="utf-8")
 
-    result = incremental_index(str(vault), db_path, _PartialFailProvider(),
-                               single_file="big-note.md")
+    before = _get_table(_get_db(db_path)).count_rows()
+    with pytest.raises(RuntimeError, match="missing or wrong-dimension"):
+        incremental_index(str(vault), db_path, _PartialFailProvider(),
+                          single_file="big-note.md")
 
     db = _get_db(db_path)
     table = _get_table(db)
     df = table.to_pandas()
     actual_big_chunks = len(df[df["file_path"] == "big-note.md"])
-    assert result["chunks_created"] == actual_big_chunks
+    assert actual_big_chunks == 0
+    assert table.count_rows() == before

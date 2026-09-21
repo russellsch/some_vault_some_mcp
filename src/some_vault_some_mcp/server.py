@@ -543,6 +543,9 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
             f"  Files indexed: {status.total_files}\n"
             f"  Total chunks: {status.total_chunks}\n"
             f"  Pending reindex: {status.pending_reindex}\n"
+            f"  Rebuild in progress: {status.rebuild_in_progress}\n"
+            f"  Serving degraded: {status.serving_degraded}\n"
+            f"  Last rebuild error: {status.last_rebuild_error or 'none'}\n"
             f"  DB size: {status.db_size_mb} MB"
         )
 
@@ -563,7 +566,11 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
         try:
             result = _reindex(vault_path, db_path, provider, single_file=path)
         except Exception as e:
-            if gate is not None:
+            # A failed compatible generation rebuild leaves the prior active
+            # table queryable. Only fail the gate when no active table remains.
+            from some_vault_some_mcp.core.indexer import resolve_active_table
+            _, active, _, _ = resolve_active_table(db_path, provider.dimensions)
+            if gate is not None and active is None:
                 gate.set_failed(str(e))
             return f"Reindex failed: {e}"
         if gate is not None and not gate.is_ready:
@@ -573,6 +580,7 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
             f"  Files indexed: {result.files_indexed}\n"
             f"  Chunks created: {result.chunks_created}\n"
             f"  Files removed: {result.files_removed}\n"
+            f"  Files skipped: {result.files_skipped}\n"
             f"  Duration: {result.duration_seconds}s"
         )
 
@@ -824,7 +832,10 @@ def build_server(config: VaultMcpConfig, provider: EmbeddingProvider, gate: Inde
     def resource_daily() -> str:
         """Today's daily note content."""
         from some_vault_some_mcp.tools.daily import get_daily_note as _get_daily
-        result = _get_daily(vault_path)
+        try:
+            result = _get_daily(vault_path)
+        except ValueError as e:
+            return f"Error: {e}"
         if result is None:
             return "No daily note for today."
         return result["content"]

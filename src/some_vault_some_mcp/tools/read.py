@@ -92,6 +92,9 @@ def list_notes(
 
     if use_index:
         candidate_paths = _list_from_index(db_path, tags, projects, status, area)
+        # Database values are untrusted.  Require an exact match in a fresh
+        # vault walk before any caller-supplied filter, count, or limit.
+        candidate_paths = _safe_index_candidates(vault_path, candidate_paths)
 
     if frontmatter_property and frontmatter_value:
         candidate_paths = _filter_by_frontmatter(
@@ -122,6 +125,24 @@ def list_notes(
     return results, total
 
 
+def _safe_index_candidates(vault_path: str, candidate_paths: list[object]) -> list[str]:
+    """Keep only readable, current vault notes represented by index values."""
+    current_paths = set(walk_vault(vault_path))
+    safe: list[str] = []
+    for rel_path in candidate_paths:
+        if not isinstance(rel_path, str) or rel_path not in current_paths:
+            continue
+        try:
+            # Resolve immediately before the probe read.  The probe ensures an
+            # unreadable DB candidate cannot inflate total_count.
+            full_path = Path(resolve_vault_path(vault_path, rel_path))
+            full_path.read_text(encoding="utf-8", errors="replace")
+        except (VaultPathError, OSError, UnicodeError):
+            continue
+        safe.append(rel_path)
+    return safe
+
+
 def _list_from_index(
     db_path: str,
     tags: list[str] | None,
@@ -131,25 +152,25 @@ def _list_from_index(
 ) -> list[str]:
     """Query LanceDB for file paths matching metadata filters (pre-filter)."""
     try:
-        import lancedb
-        db = lancedb.connect(db_path)
-        if "vault_chunks" not in db.list_tables().tables:
-            return []
-        table = db.open_table("vault_chunks")
+        from some_vault_some_mcp.core.indexer import active_table_reader
 
-        conditions = []
-        if tags:
-            conditions.append(f"({' OR '.join(like_token('tags', t) for t in tags)})")
-        if projects:
-            conditions.append(f"({' OR '.join(like_token('projects', p) for p in projects)})")
-        if status:
-            conditions.append(f"status = '{escape_string(status)}'")
-        if area:
-            conditions.append(f"area = '{escape_string(area)}'")
+        with active_table_reader(db_path) as (_, table, _, _):
+            if table is None or table.count_rows() == 0:
+                return []
 
-        where = " AND ".join(conditions)
-        df = table.search().where(where).select(["file_path"]).to_pandas()
-        return list(df["file_path"].unique())
+            conditions = []
+            if tags:
+                conditions.append(f"({' OR '.join(like_token('tags', t) for t in tags)})")
+            if projects:
+                conditions.append(f"({' OR '.join(like_token('projects', p) for p in projects)})")
+            if status:
+                conditions.append(f"status = '{escape_string(status)}'")
+            if area:
+                conditions.append(f"area = '{escape_string(area)}'")
+
+            where = " AND ".join(conditions)
+            df = table.search().where(where).select(["file_path"]).to_pandas()
+            return list(df["file_path"].unique())
     except Exception as e:
         logger.warning(f"Index filter failed: {e}")
         return []
@@ -168,10 +189,10 @@ def _filter_by_frontmatter(
     value_lower = value.lower()
     matching = []
     for rel_path in candidate_paths:
-        full_path = Path(vault_path) / rel_path
         try:
+            full_path = Path(resolve_vault_path(vault_path, rel_path))
             content = full_path.read_text(encoding="utf-8", errors="replace")
-        except Exception:
+        except (VaultPathError, OSError, UnicodeError):
             continue
         fm, _ = parse_frontmatter(content)
         prop_val = fm.get(prop)
@@ -188,10 +209,10 @@ def _filter_by_frontmatter(
 
 
 def _build_metadata(vault_path: str, rel_path: str, include_content: bool) -> NoteMetadata | None:
-    full_path = Path(vault_path) / rel_path
     try:
+        full_path = Path(resolve_vault_path(vault_path, rel_path))
         content = full_path.read_text(encoding="utf-8", errors="replace")
-    except Exception:
+    except (VaultPathError, OSError, UnicodeError):
         return None
 
     fm, _ = parse_frontmatter(content)

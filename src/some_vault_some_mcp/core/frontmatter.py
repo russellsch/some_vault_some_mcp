@@ -7,6 +7,7 @@ losing the body.
 
 import io
 import re
+from datetime import date, datetime
 from typing import Any
 
 import yaml
@@ -16,6 +17,9 @@ from ruamel.yaml import YAML
 _FENCE_RE = re.compile(r"^---\r?\n", re.MULTILINE)
 MAX_FRONTMATTER_LINES = 500
 MAX_FRONTMATTER_BYTES = 64 * 1024
+MAX_FRONTMATTER_DEPTH = 32
+MAX_FRONTMATTER_NODES = 10_000
+MAX_FRONTMATTER_NORMALIZED_BYTES = MAX_FRONTMATTER_BYTES
 
 # Round-trip YAML for the WRITE path only — preserves comments, key order, and
 # style. The read path (parse_frontmatter and its consumers) stays on PyYAML and
@@ -23,6 +27,89 @@ MAX_FRONTMATTER_BYTES = 64 * 1024
 _rt_yaml = YAML()
 _rt_yaml.preserve_quotes = True
 _rt_yaml.width = 4096  # avoid line-wrapping long scalars
+
+
+class _FrontmatterNormalizationError(ValueError):
+    """Raised when safe-loaded frontmatter is outside the supported data model."""
+
+
+def _normalize_frontmatter(value: Any) -> Any:
+    """Copy safe-YAML data into a bounded, acyclic plain-Python graph.
+
+    YAML aliases can make a graph rather than a tree. Ancestor tracking rejects
+    cycles, while removing an object from ``active`` after each branch means an
+    acyclic alias is deliberately copied and budgeted for every expansion.
+    """
+    active: set[int] = set()
+    nodes = 0
+    normalized_bytes = 0
+
+    def count_node() -> None:
+        nonlocal nodes
+        nodes += 1
+        if nodes > MAX_FRONTMATTER_NODES:
+            raise _FrontmatterNormalizationError("frontmatter node limit exceeded")
+
+    def count_scalar(value: Any) -> None:
+        """Budget scalar expansion, counting every occurrence of an alias."""
+        nonlocal normalized_bytes
+        if isinstance(value, str):
+            rendered = value
+        elif isinstance(value, (datetime, date)):
+            rendered = value.isoformat()
+        elif value is None:
+            rendered = ""
+        else:
+            rendered = str(value)
+        normalized_bytes += len(rendered.encode("utf-8"))
+        if normalized_bytes > MAX_FRONTMATTER_NORMALIZED_BYTES:
+            raise _FrontmatterNormalizationError(
+                "normalized frontmatter payload limit exceeded"
+            )
+
+    def normalize(node: Any, depth: int) -> Any:
+        if depth > MAX_FRONTMATTER_DEPTH:
+            raise _FrontmatterNormalizationError("frontmatter nesting limit exceeded")
+        count_node()
+
+        if isinstance(node, dict):
+            node_id = id(node)
+            if node_id in active:
+                raise _FrontmatterNormalizationError("recursive YAML alias")
+            active.add(node_id)
+            try:
+                copied: dict[str, Any] = {}
+                for key, item in node.items():
+                    # Keys count as graph nodes even though they are copied
+                    # directly after type validation.
+                    count_node()
+                    if not isinstance(key, str):
+                        raise _FrontmatterNormalizationError("frontmatter keys must be strings")
+                    count_scalar(key)
+                    copied[key] = normalize(item, depth + 1)
+                return copied
+            finally:
+                active.remove(node_id)
+
+        if isinstance(node, list):
+            node_id = id(node)
+            if node_id in active:
+                raise _FrontmatterNormalizationError("recursive YAML alias")
+            active.add(node_id)
+            try:
+                return [normalize(item, depth + 1) for item in node]
+            finally:
+                active.remove(node_id)
+
+        # datetime is a date subclass, so it must be checked first.
+        if isinstance(node, (type(None), bool, int, float, str, datetime, date)):
+            count_scalar(node)
+            return node
+        raise _FrontmatterNormalizationError(
+            f"unsupported frontmatter value type: {type(node).__name__}"
+        )
+
+    return normalize(value, 0)
 
 
 def _rt_dump(data: Any) -> str:
@@ -84,10 +171,19 @@ def parse_frontmatter(content: str) -> tuple[dict[str, Any], str]:
     if raw is None:
         return {}, body
     try:
-        metadata = yaml.safe_load(raw.strip()) or {}
+        metadata = yaml.safe_load(raw.strip())
+        if metadata is None:
+            metadata = {}
+        metadata = _normalize_frontmatter(metadata)
         if not isinstance(metadata, dict):
             metadata = {}
-    except yaml.YAMLError:
+    except (
+        yaml.YAMLError,
+        ValueError,
+        OverflowError,
+        RecursionError,
+        _FrontmatterNormalizationError,
+    ):
         metadata = {}
     return metadata, body
 

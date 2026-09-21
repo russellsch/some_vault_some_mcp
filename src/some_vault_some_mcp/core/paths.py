@@ -101,8 +101,11 @@ def resolve_vault_path(vault_path: str, relative_path: str) -> str:
     # check (O8a). The post-resolve check below still guards realpath containment.
     _check_excluded(relative_path)
 
-    vault = Path(vault_path).resolve()
-    candidate = (vault / relative_path).resolve()
+    try:
+        vault = Path(vault_path).resolve()
+        candidate = (vault / relative_path).resolve()
+    except RuntimeError as exc:
+        raise VaultPathError("Path resolution failed") from exc
 
     # Must start with vault root
     try:
@@ -129,8 +132,11 @@ def resolve_internal(vault_path: str, relative_path: str) -> str:
     if "\0" in relative_path:
         raise VaultPathError("Invalid path: contains null byte")
 
-    vault = Path(vault_path).resolve()
-    candidate = (vault / relative_path).resolve()
+    try:
+        vault = Path(vault_path).resolve()
+        candidate = (vault / relative_path).resolve()
+    except RuntimeError as exc:
+        raise VaultPathError("Path resolution failed") from exc
 
     try:
         candidate.relative_to(vault)
@@ -148,7 +154,7 @@ def _within_vault(path: Path, vault_root: Path) -> bool:
     """
     try:
         return path.resolve().is_relative_to(vault_root)
-    except OSError:
+    except (OSError, RuntimeError):
         return False  # broken symlink / cycle
 
 

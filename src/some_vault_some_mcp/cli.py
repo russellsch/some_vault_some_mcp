@@ -4,9 +4,9 @@ Boot sequence (§6.4):
 1. Load config from env
 2. Validate vault path
 3. Initialize embedding provider
-4. Dimension check against existing LanceDB (refuse if mismatch)
-5. Run full_index if table empty/missing, else incremental_index
-6. Start filesystem watcher
+4. Validate/clean the generation manifest and dimensions
+5. Start filesystem watcher in buffering mode
+6. Build or reconcile the active index
 7. Start MCP transport (SSE or stdio)
 """
 
@@ -15,6 +15,7 @@ import hmac
 import logging
 import os
 import sys
+from pathlib import Path
 
 logging.basicConfig(
     stream=sys.stderr,
@@ -45,7 +46,7 @@ def serve(args) -> None:
     from some_vault_some_mcp.core.embeddings import get_provider
     from some_vault_some_mcp.core.indexer import (
         _check_dimension_mismatch, _get_db, _get_table, check_and_maybe_migrate,
-        full_index, incremental_index, TABLE_NAME,
+        cleanup_inactive_generations, full_index, incremental_index, resolve_active_table,
     )
     from some_vault_some_mcp.core.watcher import start_watcher
     from some_vault_some_mcp.server import build_server
@@ -75,6 +76,17 @@ def serve(args) -> None:
     logger.info(f"LanceDB path: {config.db_path}")
     logger.info(f"Transport: {config.transport}")
 
+    raw_db_path = Path(config.db_path).expanduser()
+    resolved_db_path = raw_db_path.resolve()
+    vault_root = Path(config.vault_path).resolve()
+    cwd_root = Path.cwd().resolve()
+    if not raw_db_path.is_absolute():
+        logger.warning("LANCE_DB_PATH is relative; use a trusted absolute path outside the vault and workspace")
+    if resolved_db_path.is_relative_to(vault_root):
+        logger.warning("LANCE_DB_PATH is inside the vault; index data is attacker-accessible")
+    if resolved_db_path.is_relative_to(cwd_root):
+        logger.warning("LANCE_DB_PATH is inside the current working directory; use a trusted external location")
+
     # Step 1: wait for Ollama if using it
     provider_name = os.getenv("EMBEDDING_PROVIDER", "fastembed")
     if provider_name == "ollama":
@@ -95,13 +107,18 @@ def serve(args) -> None:
         logger.error(f"Embedding provider error: {e}")
         sys.exit(1)
 
-    # Step 3: dimension check
+    # Step 3: clean only stale owned generations before any reader can open one.
+    cleanup_inactive_generations(config.db_path)
+
+    # Step 4: dimension check. An explicit forced rebuild is the only allowed
+    # dimension migration path.
     db = _get_db(config.db_path)
-    try:
-        _check_dimension_mismatch(db, provider.dimensions)
-    except RuntimeError as e:
-        logger.error(str(e))
-        sys.exit(1)
+    if not getattr(args, "reindex_force", False):
+        try:
+            _check_dimension_mismatch(db, provider.dimensions)
+        except RuntimeError as e:
+            logger.error(str(e))
+            sys.exit(1)
 
     # Step 4: initial index + watcher
     from some_vault_some_mcp.server import IndexGate
@@ -109,7 +126,7 @@ def serve(args) -> None:
 
     gate = IndexGate()
     table = _get_table(db)
-    needs_full_index = table is None or table.count_rows() == 0
+    needs_full_index = table is None
     if not needs_full_index and check_and_maybe_migrate(db, config.db_path):
         logger.warning("Index schema is outdated — rebuilding from scratch (one-time reindex).")
         needs_full_index = True
@@ -117,21 +134,43 @@ def serve(args) -> None:
         logger.info("--reindex-force: rebuilding the index from scratch.")
         needs_full_index = True
 
+    # Capture changes before any scan. Full publication is refused if capture
+    # cannot start, because a scan/cutover gap would otherwise lose changes.
+    watcher = start_watcher(config.vault_path, config.db_path, provider, buffering=True)
+
     def _background_index():
         try:
             if needs_full_index:
+                if watcher is None:
+                    raise RuntimeError("filesystem watcher capture is unavailable; refusing full index publication")
                 logger.info("Background full_index started (server is accepting connections)...")
-                result = full_index(config.vault_path, config.db_path, provider)
+                result = full_index(config.vault_path, config.db_path, provider, watcher=watcher)
                 logger.info(f"Full index complete: {result}")
             else:
                 logger.info("Background incremental_index started (server is accepting connections)...")
-                result = incremental_index(config.vault_path, config.db_path, provider)
+                if watcher is not None:
+                    watcher.acquire_cutover()
+                try:
+                    result = incremental_index(config.vault_path, config.db_path, provider)
+                    if watcher is not None:
+                        watcher.commit_cutover()
+                finally:
+                    if watcher is not None:
+                        watcher.release_cutover()
                 logger.info(f"Incremental index complete: {result}")
-            start_watcher(config.vault_path, config.db_path, provider)
             gate.set_ready()
         except Exception as e:
+            if watcher is not None:
+                watcher.abort_cutover()
             logger.error(f"Background indexing failed: {e}")
-            gate.set_failed(str(e))
+            # A compatible published generation remains usable when a staged
+            # rebuild fails. Keep search available in degraded mode; only fail
+            # closed when there is no valid table to serve.
+            _, active, _, _ = resolve_active_table(config.db_path, provider.dimensions)
+            if active is None:
+                gate.set_failed(str(e))
+            else:
+                gate.set_ready()
 
     threading.Thread(target=_background_index, daemon=True, name="background-indexer").start()
 

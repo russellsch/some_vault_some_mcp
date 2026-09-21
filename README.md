@@ -16,7 +16,7 @@ Warning: This is a hot vibe coded mess, user beware
 - Wikilink graph - backlinks, outlinks, orphan detection, broken link detection, BFS neighbor traversal (depth 1-5)
 - Canvas CRUD - create, read, add/update/remove nodes and edges, grid auto-layout, dangling edge cleanup
 - Daily notes - Moment.js-style date formatting, template support, reads Obsidian's daily-notes config
-- Incremental indexing - filesystem watcher with 2s debounce, mtime-based change detection
+- Incremental indexing - filesystem watcher with 2s debounce and SHA-256 content change detection
 - Atomic writes - temp file + POSIX rename, per-path asyncio locks
 - Tool overrides - rename or disable any tool via YAML config (per-agent customization)
 
@@ -79,7 +79,13 @@ If running the server separately (Docker, remote, etc.), use the SSE URL instead
 VAULT_PATH=/path/to/vault uvx some-vault-some-mcp serve
 ```
 
-First run does a full index of the vault - takes a few minutes depending on size. Subsequent starts run incremental index only.
+First run builds a staged index generation and publishes it only after schema,
+vector, and full-text validation. Subsequent starts scan content hashes and
+publish incremental changes through staged generations too, so the last valid
+generation remains available on failure. Readers hold a cross-process shared
+lease while materializing results; publication and live cleanup take the
+exclusive side, so completed databases retain only the active and previous
+generations without dropping an in-flight reader's table.
 
 ### CLI flags
 
@@ -87,7 +93,8 @@ First run does a full index of the vault - takes a few minutes depending on size
 some-vault-some-mcp serve [--transport sse|stdio] [--host 127.0.0.1] [--port 3789] [--reindex-force]
 ```
 
-`--reindex-force` drops the existing index and rebuilds from scratch. The server
+`--reindex-force` builds and validates a replacement generation without dropping
+the active index first. It is required when embedding dimensions change. The server
 also rebuilds automatically (one time) when it detects an index written by an
 older storage format.
 
@@ -98,7 +105,7 @@ CLI flags override env vars.
 | Variable | Default | Notes |
 |---|---|---|
 | `VAULT_PATH` | (required) | Absolute path to Obsidian vault |
-| `LANCE_DB_PATH` | `./data/vault.lance` | Where the vector index lives |
+| `LANCE_DB_PATH` | `./data/vault.lance` | Vector index location. Use a trusted absolute path outside the vault and workspace; unsafe locations produce a warning. |
 | `MCP_TRANSPORT` | `sse` | `sse` or `stdio` |
 | `MCP_HOST` | `127.0.0.1` | SSE bind address. Defaults to loopback — set `0.0.0.0` to expose on the network (the Docker image does this explicitly). Binding non-loopback without `VAULT_API_KEY` logs a warning. |
 | `MCP_PORT` | `3789` | SSE port |
@@ -211,7 +218,12 @@ Merge key-value pairs into YAML frontmatter. Unlisted keys preserved.
 
 #### `move_note`
 
-Move or rename a note. Rewrites wikilinks vault-wide by default.
+Move or rename a note. Rewrites wikilinks vault-wide by default. Moves are
+no-replace operations: an existing distinct destination is never overwritten.
+Filesystems without the platform's native exclusive-rename capability are
+rejected rather than falling back to an overwriting rename. A separately named
+hard-link destination also fails closed because it cannot be removed safely
+under a concurrent destination replacement.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -421,11 +433,13 @@ Remove edges from a canvas by ID.
 
 #### `vault_index_status`
 
-Check search index health and statistics. No arguments.
+Check search index health and statistics, including rebuild progress, degraded
+fallback serving, pending changes, and the last rebuild error. No arguments.
 
 #### `vault_reindex`
 
-Trigger incremental reindex for one note or the entire vault.
+Reindex one note incrementally, or build and atomically publish a new generation
+when the path is omitted.
 
 | Param | Type | Default | Notes |
 |---|---|---|---|
@@ -481,12 +495,28 @@ First matching step wins.
 
 ## Security boundaries
 
-- All paths validated against vault root - rejects `../`, null bytes, symlink escapes
+- Tool paths are validated against the vault root and reject `../`, null bytes,
+  and static symlink escapes. These pathname checks do not close the concurrent
+  symlink-swap race described as SR-04 in `SECURITY_REVIEW.md`.
 - `.obsidian`, `.git`, `.trash` denied at the tool boundary and excluded from indexing
 - Any folder whose name starts with `.` (for example `.claude/`) is skipped by the indexer and by note listings. Add more folder names with `VAULT_EXCLUDED_DIRS=external,archive` or with an `excluded_dirs: [external, archive]` list in the override file. These folders are hidden, not denied: search, listings, backlinks and link rewrites skip them, but a tool call with the exact path still works. `resolve_vault_path` still denies only `.obsidian`, `.git` and `.trash`.
 - Optional Bearer token auth on SSE transport
 - Docker container runs as non-root
-- Bounded frontmatter parsing prevents YAML bombs
+- Frontmatter normalization rejects recursive aliases, excessive depth, excessive
+  node or scalar-payload expansion, invalid timestamps, non-string mapping keys,
+  and unsupported scalar types. Invalid metadata is discarded while the note
+  body remains indexable.
+
+### Index recovery
+
+Full rebuilds retain the previous valid generation. If a newly published index
+must be rolled back, stop every server process using that `LANCE_DB_PATH`, back up
+the complete index directory, then swap the `active` and `previous` table names in
+`_index_manifest.json`. Write the edited JSON to a sibling temporary file and
+atomically replace the manifest; do not edit it in place. Restart the server and
+confirm `vault_index_status` reports the expected file and chunk counts. Keep the
+backup until search results have been checked. If either named table is missing or
+the manifest is malformed, restore the backup instead of deleting tables manually.
 
 ## Developing
 

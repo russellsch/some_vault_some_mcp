@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from some_vault_some_mcp.core.atomic_write import atomic_create, atomic_write, with_file_lock
+from some_vault_some_mcp.core.exclusive_move import exclusive_move
 from some_vault_some_mcp.core.frontmatter import (
     parse_frontmatter,
     serialize_frontmatter,
@@ -174,11 +175,13 @@ async def move_note(
     except VaultPathError as e:
         raise ValueError(str(e))
 
+    # Some case-insensitive hosts canonicalize an existing leaf during path
+    # resolution.  Keep the validated parent but restore the requested leaf so
+    # the move primitive can distinguish a case-only rename from an exact no-op.
+    full_new = str(Path(full_new).with_name(Path(resolved_new).name))
+
     if not Path(full_old).exists():
         raise FileNotFoundError(f"Note not found: {resolved_old}")
-
-    if Path(full_new).exists() and full_old.lower() != full_new.lower():
-        raise FileExistsError(f"Destination already exists: {resolved_new}")
 
     # Gather all notes for link rewriting before the move
     all_notes = walk_vault(vault_path) if update_links else []
@@ -201,7 +204,7 @@ async def move_note(
 
     # Perform the move
     Path(full_new).parent.mkdir(parents=True, exist_ok=True)
-    os.rename(full_old, full_new)
+    exclusive_move(full_old, full_new, vault_path)
 
     updated_referrers = []
     failed_referrers = []

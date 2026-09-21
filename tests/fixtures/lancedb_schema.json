@@ -12,6 +12,7 @@
     {"name": "status", "type": "string", "nullable": false, "note": "empty string when absent"},
     {"name": "source", "type": "string", "nullable": false, "note": "empty string when absent"},
     {"name": "file_mtime", "type": "double", "nullable": false, "note": "POSIX epoch seconds"},
+    {"name": "content_hash", "type": "string", "nullable": false, "note": "SHA-256 of raw note bytes"},
     {"name": "vector", "type": "fixed_size_list[float32]", "list_size": 768, "nullable": false}
   ],
   "fts_index": {

@@ -71,3 +71,27 @@ def test_list_notes_filter_no_match(indexed_vault):
     results, total = list_notes(vault_path, db_path=db_path, tags=["nonexistent-tag-xyz"])
     assert total == 0
     assert results == []
+
+
+def test_index_candidates_are_vault_walk_intersection_before_total_and_limit(tmp_path, monkeypatch):
+    """Poisoned DB paths cannot escape, inflate totals, or consume the limit."""
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / "a.md").write_text("---\ntags: [picked]\n---\nA", encoding="utf-8")
+    (vault / "b.md").write_text("---\ntags: [picked]\n---\nB", encoding="utf-8")
+    (vault / ".hidden").mkdir()
+    (vault / ".hidden" / "secret.md").write_text("secret", encoding="utf-8")
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside", encoding="utf-8")
+    (vault / "escape.md").symlink_to(outside)
+
+    poisoned = [
+        "../outside.md", "/absolute-inside-vault.md", "C:\\windows.md", "\\\\server\\share.md",
+        ".hidden/secret.md", "missing.md", "escape.md", 42, None, "b.md", "a.md",
+    ]
+    monkeypatch.setattr("some_vault_some_mcp.tools.read._list_from_index", lambda *args: poisoned)
+
+    results, total = list_notes(str(vault), db_path="unused", tags=["picked"], limit=1)
+
+    assert total == 2
+    assert [result.file_path for result in results] == ["a.md"]

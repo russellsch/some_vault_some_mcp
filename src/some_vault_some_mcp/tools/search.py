@@ -21,12 +21,11 @@ _KW_WEIGHT = 0.3
 _BOOST_FACTOR = 1.2
 
 
-def _get_table_and_db(db_path: str):
-    import lancedb
-    db = lancedb.connect(db_path)
-    if "vault_chunks" not in db.list_tables().tables:
-        return None, None
-    return db, db.open_table("vault_chunks")
+def _has_searchable_index(db_path: str) -> bool:
+    from some_vault_some_mcp.core.indexer import active_table_reader
+
+    with active_table_reader(db_path) as (_, table, _, _):
+        return table is not None and table.count_rows() > 0
 
 
 def semantic_search(
@@ -38,14 +37,22 @@ def semantic_search(
     folder: str | None = None,
 ) -> list[SearchResult]:
     """Pure vector similarity search with pre-filter on tags/folder."""
-    db, table = _get_table_and_db(db_path)
-    if table is None:
-        return []
+    from some_vault_some_mcp.core.indexer import active_table_reader
 
+    if not _has_searchable_index(db_path):
+        return []
     try:
         query_vector = provider.embed_query(query)
     except Exception as e:
         raise EmbeddingError(str(e))
+
+    with active_table_reader(db_path) as (_, table, _, _):
+        return _semantic_search_table(table, query_vector, top_k, tags, folder)
+
+
+def _semantic_search_table(table, query_vector, top_k, tags, folder) -> list[SearchResult]:
+    if table is None or table.count_rows() == 0:
+        return []
 
     # Build where clause for pre-filter
     conditions = []
@@ -88,14 +95,22 @@ def hybrid_search(
     folder: str | None = None,
 ) -> list[SearchResult]:
     """Hybrid search: 70% semantic + 30% FTS keyword, 1.2x boost on both match."""
-    db, table = _get_table_and_db(db_path)
-    if table is None:
-        return []
+    from some_vault_some_mcp.core.indexer import active_table_reader
 
+    if not _has_searchable_index(db_path):
+        return []
     try:
         query_vector = provider.embed_query(query)
     except Exception as e:
         raise EmbeddingError(str(e))
+
+    with active_table_reader(db_path) as (_, table, _, _):
+        return _hybrid_search_table(table, query, query_vector, top_k, tags, folder)
+
+
+def _hybrid_search_table(table, query, query_vector, top_k, tags, folder) -> list[SearchResult]:
+    if table is None or table.count_rows() == 0:
+        return []
 
     # Build where clause for pre-filter
     conditions = []

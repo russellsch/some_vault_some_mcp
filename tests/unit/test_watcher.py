@@ -60,8 +60,8 @@ def test_non_md_events_ignored(tmp_path):
     assert call_log == []
 
 
-def test_error_recovery_continues(tmp_path):
-    """Single-file indexer failure doesn't prevent next event from being processed."""
+def test_error_recovery_retains_events_for_candidate_rebuild(tmp_path):
+    """A failed mutation enters buffering mode and never drops later events."""
     from unittest.mock import patch
 
     vault_path = str(tmp_path / "vault")
@@ -88,8 +88,11 @@ def test_error_recovery_continues(tmp_path):
         handler._on_event(str(tmp_path / "vault" / "note2.md"))
         time.sleep(DEBOUNCE_SECS + 0.5)
 
-    # Second call succeeded
-    assert {"note2.md"} in call_log
+    # The known-good generation is no longer mutated after the failure. Both
+    # paths remain journaled for the next staged candidate rebuild.
+    assert call_log == []
+    assert handler.is_buffering
+    assert handler.journal_size == 2
 
 
 def test_excluded_dir_events_dropped(tmp_path):
@@ -117,3 +120,56 @@ def test_excluded_dir_events_dropped(tmp_path):
         time.sleep(DEBOUNCE_SECS + 0.5)
 
     assert call_log == []
+
+
+def test_buffering_journal_is_non_destructive_until_commit(tmp_path):
+    from unittest.mock import patch
+
+    vault_path = str(tmp_path / "vault")
+    (tmp_path / "vault").mkdir()
+    calls = []
+
+    with patch("some_vault_some_mcp.core.watcher.incremental_index", lambda *a, **k: calls.append(k)):
+        from some_vault_some_mcp.core.watcher import _VaultEventHandler
+        handler = _VaultEventHandler(vault_path, "fake_db", None, buffering=True)
+        handler._on_event(str(tmp_path / "vault" / "early.md"))
+        handler._on_event(str(tmp_path / "vault" / "late.md"))
+        assert handler.journal_size == 2
+        assert calls == []
+
+        handler.acquire_cutover()
+        handler.commit_cutover()
+        handler.release_cutover()
+        assert not handler.is_buffering
+        assert handler.journal_size == 0
+
+
+def test_event_blocked_on_cutover_runs_after_new_generation_is_active(tmp_path):
+    from unittest.mock import patch
+
+    vault_path = str(tmp_path / "vault")
+    (tmp_path / "vault").mkdir()
+    calls = []
+
+    def fake_incremental(*args, **kwargs):
+        calls.append(kwargs["only_files"])
+        return {"files_indexed": 1, "chunks_created": 1, "files_removed": 0,
+                "files_skipped": 0, "duration_seconds": 0.0}
+
+    with patch("some_vault_some_mcp.core.watcher.incremental_index", fake_incremental):
+        from some_vault_some_mcp.core.watcher import _VaultEventHandler, DEBOUNCE_SECS
+        handler = _VaultEventHandler(vault_path, "fake_db", None, buffering=True)
+        handler.acquire_cutover()
+        event_thread = threading.Thread(
+            target=handler._on_event,
+            args=(str(tmp_path / "vault" / "after.md"),),
+        )
+        event_thread.start()
+        time.sleep(0.05)
+        assert event_thread.is_alive()
+        handler.commit_cutover()
+        handler.release_cutover()
+        event_thread.join(timeout=1)
+        time.sleep(DEBOUNCE_SECS + 0.5)
+
+    assert calls == [{"after.md"}]
